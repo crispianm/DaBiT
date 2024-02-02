@@ -4,7 +4,6 @@
     "train_data_loader": {
         "name": "youtube-vos",
         "video_root": "T:/ProPainter/datasets/youtube-vos/JPEGImages",
-        "flow_root": "T:/ProPainter/flows/youtube-vos/JPEGImages",
         "depth_root": "T:/ProPainter/depths/youtube-vos/",
         "w": 432,
         "h": 240,
@@ -19,7 +18,7 @@
         "net": "recurrent_depth_completion"
     },
     "trainer": {
-        "version": "trainer_flow_w_edge",
+        "version": "trainer_depth",
         "type": "Adam",
         "beta1": 0,
         "beta2": 0.99,
