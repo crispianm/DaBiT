@@ -108,7 +108,7 @@ class TrainDataset(torch.utils.data.Dataset):
 
             frames.append(img)
             masks.append(all_masks[idx])
-            
+
             if self.load_depth:
                 depth_path = os.path.join(
                     self.depth_root, video_name, frame_list[idx][:-4] + "_depth.png"
@@ -137,7 +137,6 @@ class TrainDataset(torch.utils.data.Dataset):
                 flow_b = resize_flow(flow_b, self.h, self.w)
                 flows_f.append(flow_f)
                 flows_b.append(flow_b)
-
 
             if len(frames) == self.num_local_frames:  # random reverse
                 if random.random() < 0.5:
@@ -240,6 +239,7 @@ class TestDataset(torch.utils.data.Dataset):
         # read video frames
         frames = []
         masks = []
+        depths = []
         flows_f, flows_b = [], []
         for idx in selected_index:
             frame_list = self.frame_dict[video_name]
@@ -268,6 +268,19 @@ class TestDataset(torch.utils.data.Dataset):
             mask = Image.fromarray(m * 255)
             masks.append(mask)
 
+            if self.load_depth:
+                depth_path = os.path.join(
+                    self.depth_root, video_name, frame_list[idx][:-4] + "_depth.png"
+                )
+                depth = (
+                    Image.open(depth_path).resize(self.size, Image.NEAREST).convert("L")
+                )
+                depths.append(depth)
+            # else:
+            #     depth_tensors = []
+            #     for idx in selected_index:
+            # TODO add DepthAnything compatibility
+
             if len(frames) <= len(selected_index) - 1 and self.load_flow:
                 current_n = frame_list[idx][:-4]
                 next_n = frame_list[idx + 1][:-4]
@@ -288,6 +301,7 @@ class TestDataset(torch.utils.data.Dataset):
         frames_PIL = [np.array(f).astype(np.uint8) for f in frames]
         frame_tensors = self._to_tensors(frames) * 2.0 - 1.0
         mask_tensors = self._to_tensors(masks)
+        depth_tensors = self._to_tensors(depths)
 
         if self.load_flow:
             flows_f = np.stack(flows_f, axis=-1)  # H W 2 T-1
@@ -296,6 +310,21 @@ class TestDataset(torch.utils.data.Dataset):
             flows_b = torch.from_numpy(flows_b).permute(3, 2, 0, 1).contiguous().float()
 
         if self.load_flow:
-            return frame_tensors, mask_tensors, flows_f, flows_b, video_name, frames_PIL
+            return (
+                frame_tensors,
+                mask_tensors,
+                depth_tensors,
+                flows_f,
+                flows_b,
+                video_name,
+                frames_PIL,
+            )
         else:
-            return frame_tensors, mask_tensors, "None", "None", video_name
+            return (
+                frame_tensors,
+                mask_tensors,
+                depth_tensors,
+                "None",
+                "None",
+                video_name,
+            )
