@@ -18,6 +18,7 @@ from core.utils import (
     ToTorchFormatTensor,
     GroupRandomHorizontalFlip,
     GroupRandomHorizontalFlowFlip,
+    GroupRandomHorizontalDepthFlip,
 )
 
 
@@ -93,7 +94,9 @@ class TrainDataset(torch.utils.data.Dataset):
         # read video frames
         frames = []
         masks = []
+        depths = []
         flows_f, flows_b = [], []
+
         for idx in selected_index:
             frame_list = self.frame_dict[video_name]
             img_path = os.path.join(self.video_root, video_name, frame_list[idx])
@@ -105,6 +108,19 @@ class TrainDataset(torch.utils.data.Dataset):
 
             frames.append(img)
             masks.append(all_masks[idx])
+            
+            if self.load_depth:
+                depth_path = os.path.join(
+                    self.depth_root, video_name, frame_list[idx][:-4] + "_depth.png"
+                )
+                depth = (
+                    Image.open(depth_path).resize(self.size, Image.NEAREST).convert("L")
+                )
+                depths.append(depth)
+            # else:
+            #     depth_tensors = []
+            #     for idx in selected_index:
+            # TODO add DepthAnything compatibility
 
             if len(frames) <= self.num_local_frames - 1 and self.load_flow:
                 current_n = frame_list[idx][:-4]
@@ -122,9 +138,11 @@ class TrainDataset(torch.utils.data.Dataset):
                 flows_f.append(flow_f)
                 flows_b.append(flow_b)
 
+
             if len(frames) == self.num_local_frames:  # random reverse
                 if random.random() < 0.5:
                     frames.reverse()
+                    depths.reverse()
                     masks.reverse()
                     if self.load_flow:
                         flows_f.reverse()
@@ -133,35 +151,26 @@ class TrainDataset(torch.utils.data.Dataset):
                         flows_f = flows_b
                         flows_b = flows_
 
-        if self.load_flow:
+        if self.load_flow and not self.load_depth:
             frames, flows_f, flows_b = GroupRandomHorizontalFlowFlip()(
                 frames, flows_f, flows_b
+            )
+        elif self.load_flow and self.load_depth:
+            frames, depths, flows_f, flows_b = GroupRandomHorizontalDepthFlip()(
+                frames, depths, flows_f, flows_b
             )
         else:
             frames = GroupRandomHorizontalFlip()(frames)
 
         # normalizate, to tensors
         frame_tensors = self._to_tensors(frames) * 2.0 - 1.0
+        depth_tensors = self._to_tensors(depths)
         mask_tensors = self._to_tensors(masks)
         if self.load_flow:
             flows_f = np.stack(flows_f, axis=-1)  # H W 2 T-1
             flows_b = np.stack(flows_b, axis=-1)
             flows_f = torch.from_numpy(flows_f).permute(3, 2, 0, 1).contiguous().float()
             flows_b = torch.from_numpy(flows_b).permute(3, 2, 0, 1).contiguous().float()
-
-        if self.load_depth:
-            depth_path = os.path.join(self.depth_root, video_name)
-            depth_tensors = []
-            for idx in selected_index:
-                frame_list = self.frame_dict[video_name]
-                depth_path = os.path.join(
-                    self.depth_root, video_name, frame_list[idx][:-4] + "_depth.png"
-                )
-                depth = Image.open(depth_path).resize(self.size, Image.NEAREST)
-                depth = np.array(depth).astype(np.float32) / 255.0
-                depth = torch.from_numpy(depth).unsqueeze(0)
-                depth_tensors.append(depth)
-            depth_tensors = torch.cat(depth_tensors, dim=0)
 
         # img [-1,1] mask [0,1]
         if self.load_flow:
