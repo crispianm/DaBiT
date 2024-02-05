@@ -11,13 +11,13 @@ import torch.multiprocessing as mp
 
 import core
 import core.trainer
+import core.trainer_flow_w_edge
 import core.trainer_depth
 
 
 from torch.utils.tensorboard import SummaryWriter
 
-os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
-
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 
 from core.dist import (
@@ -72,7 +72,6 @@ def main_worker(rank, config):
         config["device"] = "cpu"
         print("No GPU found, using CPU instead")
 
-
     if (not config["distributed"]) or config["global_rank"] == 0:
         os.makedirs(config["save_dir"], exist_ok=True)
         config_path = os.path.join(config["save_dir"], args.config.split("/")[-1])
@@ -99,6 +98,5 @@ if __name__ == "__main__":
     config["world_size"] = torch.cuda.device_count()
     config["init_method"] = f"tcp://{get_master_ip()}:{args.port}"
     config["distributed"] = True if config["world_size"] > 1 else False
-
 
     mp.spawn(main_worker, nprocs=torch.cuda.device_count(), args=(config,))

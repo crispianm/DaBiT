@@ -3,13 +3,15 @@
     "save_dir": "experiments_model/",
     "train_data_loader": {
         "name": "youtube-vos",
-        "video_root": "T:/ProPainter/datasets/youtube-vos/JPEGImages",
-        "depth_root": "T:/ProPainter/depths/youtube-vos/",
+        "video_root": "T:/ProPainter Datasets/youtube-vos/JPEGImages",
+        "flow_root": "T:/ProPainter Datasets/youtube-vos/flows/JPEGImages",
+        "depth_root": "T:/ProPainter Datasets/youtube-vos/depths/JPEGImages",
         "w": 432,
         "h": 240,
         "num_local_frames": 10,
         "num_ref_frames": 1,
-        "load_flow": 1
+        "load_flow": 1,
+        "load_depth": 1
     },
     "losses": {
         "depth_weight": 0.25
@@ -41,3 +43,5 @@
         }
     }
 }
+
+
