@@ -9,7 +9,7 @@
         "w": 432,
         "h": 240,
         "num_local_frames": 10,
-        "num_ref_frames": 1,
+        "num_ref_frames": 3,
         "load_flow": 1,
         "load_depth": 1
     },
@@ -17,7 +17,7 @@
         "depth_weight": 0.25
     },
     "model": {
-        "net": "recurrent_depth_completion"
+        "net": "depth_completion"
     },
     "trainer": {
         "version": "trainer_depth",
@@ -43,5 +43,3 @@
         }
     }
 }
-
-

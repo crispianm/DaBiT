@@ -19,6 +19,8 @@ from core.utils import (
     GroupRandomHorizontalFlip,
     GroupRandomHorizontalFlowFlip,
     GroupRandomHorizontalDepthFlip,
+    get_random_focus_depths,
+    generate_random_depth_mask,
 )
 
 
@@ -81,10 +83,8 @@ class TrainDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         video_name = self.video_names[index]
-        # create masks
-        all_masks = create_random_shape_with_random_motion(
-            self.video_dict[video_name], imageHeight=self.h, imageWidth=self.w
-        )
+
+        d1, d2, v, focal_point = get_random_focus_depths()
 
         # create sample index
         selected_index = self._sample_index(
@@ -107,7 +107,6 @@ class TrainDataset(torch.utils.data.Dataset):
             img = Image.fromarray(img)
 
             frames.append(img)
-            masks.append(all_masks[idx])
 
             if self.load_depth:
                 depth_path = os.path.join(
@@ -121,6 +120,9 @@ class TrainDataset(torch.utils.data.Dataset):
             #     depth_tensors = []
             #     for idx in selected_index:
             # TODO add DepthAnything compatibility
+
+            d1, d2, mask = generate_random_depth_mask(depth, d1, d2, v, focal_point)
+            masks.append(mask)
 
             if len(frames) <= self.num_local_frames - 1 and self.load_flow:
                 current_n = frame_list[idx][:-4]

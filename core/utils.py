@@ -207,7 +207,7 @@ def create_random_shape_with_random_motion(
     x, y = random.randint(0, imageHeight - region_height), random.randint(
         0, imageWidth - region_width
     )
-    velocity = get_random_velocity(max_speed=3)
+    v = get_random_v(max_speed=3)
     m = Image.fromarray(np.zeros((imageHeight, imageWidth)).astype(np.uint8))
     m.paste(region, (y, x, y + region.size[0], x + region.size[1]))
     masks = [m.convert("L")]
@@ -216,12 +216,12 @@ def create_random_shape_with_random_motion(
         return masks * video_length
     # return moving masks
     for _ in range(video_length - 1):
-        x, y, velocity = random_move_control_points(
+        x, y, v = random_move_control_points(
             x,
             y,
             imageHeight,
             imageWidth,
-            velocity,
+            v,
             region.size,
             maxLineAcceleration=(3, 0.5),
             maxInitSpeed=3,
@@ -259,7 +259,7 @@ def create_random_shape_with_random_motion_zoom_rotation(
     x, y = random.randint(0, imageHeight - region_height), random.randint(
         0, imageWidth - region_width
     )
-    velocity = get_random_velocity(max_speed=3)
+    v = get_random_v(max_speed=3)
     m = Image.fromarray(np.zeros((imageHeight, imageWidth)).astype(np.uint8))
     m.paste(region, (y, x, y + region.size[0], x + region.size[1]))
     masks = [m.convert("L")]
@@ -268,12 +268,12 @@ def create_random_shape_with_random_motion_zoom_rotation(
         return masks * video_length  # -> directly copy all the base masks
     # return moving masks
     for _ in range(video_length - 1):
-        x, y, velocity = random_move_control_points(
+        x, y, v = random_move_control_points(
             x,
             y,
             imageHeight,
             imageWidth,
-            velocity,
+            v,
             region.size,
             maxLineAcceleration=(3, 0.5),
             maxInitSpeed=3,
@@ -352,8 +352,8 @@ def get_random_shape(edge_num=9, ratio=0.7, width=432, height=240):
     return region
 
 
-def random_accelerate(velocity, maxAcceleration, dist="uniform"):
-    speed, angle = velocity
+def random_accelerate(v, maxAcceleration, dist="uniform"):
+    speed, angle = v
     d_speed, d_angle = maxAcceleration
     if dist == "uniform":
         speed += np.random.uniform(-d_speed, d_speed)
@@ -366,7 +366,7 @@ def random_accelerate(velocity, maxAcceleration, dist="uniform"):
     return (speed, angle)
 
 
-def get_random_velocity(max_speed=3, dist="uniform"):
+def get_random_v(max_speed=3, dist="uniform"):
     if dist == "uniform":
         speed = np.random.uniform(max_speed)
     elif dist == "guassian":
@@ -382,26 +382,26 @@ def random_move_control_points(
     Y,
     imageHeight,
     imageWidth,
-    lineVelocity,
+    linev,
     region_size,
     maxLineAcceleration=(3, 0.5),
     maxInitSpeed=3,
 ):
     region_width, region_height = region_size
-    speed, angle = lineVelocity
+    speed, angle = linev
     X += int(speed * np.cos(angle))
     Y += int(speed * np.sin(angle))
-    lineVelocity = random_accelerate(lineVelocity, maxLineAcceleration, dist="guassian")
+    linev = random_accelerate(linev, maxLineAcceleration, dist="guassian")
     if (
         (X > imageHeight - region_height)
         or (X < 0)
         or (Y > imageWidth - region_width)
         or (Y < 0)
     ):
-        lineVelocity = get_random_velocity(maxInitSpeed, dist="guassian")
+        linev = get_random_v(maxInitSpeed, dist="guassian")
     new_X = np.clip(X, 0, imageHeight - region_height)
     new_Y = np.clip(Y, 0, imageWidth - region_width)
-    return new_X, new_Y, lineVelocity
+    return new_X, new_Y, linev
 
 
 if __name__ == "__main__":
@@ -417,3 +417,75 @@ if __name__ == "__main__":
         for m in masks:
             cv2.imshow("mask", np.array(m))
             cv2.waitKey(500)
+
+
+# ###########################################################################
+# Create random blur masks
+# ###########################################################################
+
+
+def get_random_focus_depths():
+
+    # Define focal range
+    window = random.uniform(0.3, 0.5)
+    focal_point = random.uniform(0, 1)
+
+    # Add focus pull
+    v = random.uniform(0.005, 0.02)
+
+    if focal_point >= 1 - window:
+        d1 = 1 - window
+        d2 = 1
+    elif focal_point <= window:
+        d1 = 0
+        d2 = window
+    else:
+        d1 = focal_point - window
+        d2 = focal_point + window
+
+    return d1, d2, v, focal_point
+
+
+def generate_random_depth_mask(depth, d1, d2, v, focal_point):
+
+    # Scale depth to [0, 1]
+    depth = depth / np.max(depth)
+
+    # Initialize mask
+    mask = np.zeros((depth.shape[0], depth.shape[1]))
+
+    # Add focus pull
+    if focal_point >= np.median(depth):
+        d1 += v
+        d2 -= v
+    else:
+        d1 -= v
+        d2 += v
+
+    # Infill depths outside of focal range
+    mask[depth < d1] = 1
+    mask[depth > d2] = 1
+
+    return d1, d2, Image.fromarray(mask).convert("L")
+
+
+def get_blurred_frame(img, bk=None):
+
+    if bk is None:
+        bk = random.choice([3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23])
+    blurred_img = transforms.GaussianBlur(bk)(img)
+
+    return blurred_img, bk
+
+
+def get_blurred_masked_frames(frame_tensors, mask_tensors):
+
+    masked_frames, bk = torch.zeros_like(frame_tensors), None
+
+    for i in range(len(frame_tensors)):
+        for j in range(len(frame_tensors[i])):
+
+            blurred_img, bk = get_blurred_frame(frame_tensors[i][j], bk=bk)
+            masked_frames[i][j] = torch.where(mask_tensors[i][j] > 0, blurred_img, 0)
+
+    return masked_frames

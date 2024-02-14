@@ -5,11 +5,13 @@
         "name": "youtube-vos",
         "video_root": "T:/ProPainter Datasets/youtube-vos/JPEGImages",
         "flow_root": "T:/ProPainter Datasets/youtube-vos/flows/JPEGImages",
+        "depth_root": "T:/ProPainter Datasets/youtube-vos/depths/JPEGImages",
         "w": 432,
         "h": 240,
         "num_local_frames": 10,
         "num_ref_frames": 6,
-        "load_flow": 1
+        "load_flow": 1,
+        "load_depth": 1
     },
     "losses": {
         "hole_weight": 1,

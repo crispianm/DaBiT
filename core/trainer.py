@@ -16,9 +16,11 @@ from torch.utils.tensorboard import SummaryWriter
 from core.lr_scheduler import MultiStepRestartLR, CosineAnnealingRestartLR
 from core.loss import AdversarialLoss, PerceptualLoss, LPIPSLoss
 from core.dataset import TrainDataset
+from core.utils import get_blurred_masked_frames
 
 from model.modules.flow_comp_raft import RAFT_bi, FlowLoss, EdgeLoss
 from model.recurrent_flow_completion import RecurrentFlowCompleteNet
+from model.depth_completion import DepthCompletion
 
 from RAFT.utils.flow_viz_pt import flow_to_image
 
@@ -135,6 +137,16 @@ class Trainer:
             if not self.config["model"]["no_dis"]:
                 self.dis_writer = SummaryWriter(os.path.join(config["save_dir"], "dis"))
             self.gen_writer = SummaryWriter(os.path.join(config["save_dir"], "gen"))
+
+        # Add depth completion
+        # TODO: check this works properly
+        self.depth_completion_model = DepthCompletion().to(self.config["device"])
+        data = torch.load(
+            "checkpoints/depth_completion.pth", map_location=self.config["device"]
+        )
+        self.depth_completion_model.load_state_dict(data["netG"])
+        print("loading from: {}".format("checkpoints/depth_completion.pth"))
+        self.depth_completion_model.eval()
 
     def setup_optimizers(self):
         """Set up optimizers."""
@@ -381,21 +393,34 @@ class Trainer:
         device = self.config["device"]
         train_data = self.prefetcher.next()
         while train_data is not None:
+
             self.iteration += 1
-            frames, masks, flows_f, flows_b, _ = train_data
-            frames, masks = frames.to(device), masks.to(device).float()
+            frames, depths, masks, flows_f, flows_b, _ = train_data
+            frames, depths, masks = (
+                frames.to(device),
+                depths.to(device).float(),
+                masks.to(device).float(),
+            )
+
             l_t = self.num_local_frames
             b, t, c, h, w = frames.size()
             gt_local_frames = frames[:, :l_t, ...]
             local_masks = masks[:, :l_t, ...].contiguous()
 
-            masked_frames = frames * (1 - masks)
+            masked_frames = get_blurred_masked_frames(frames, masks)
             masked_local_frames = masked_frames[:, :l_t, ...]
+
             # get gt optical flow
             if flows_f[0] == "None" or flows_b[0] == "None":
                 gt_flows_bi = self.fix_raft(gt_local_frames)
             else:
                 gt_flows_bi = (flows_f.to(device), flows_b.to(device))
+
+            # ---- Complete Depth ----
+            # TODO: Finish this
+            # with torch.no_grad():
+            #     completed_depth = self.depth_completion_model(depths * (1.0 - mask).float(), mask)
+            completed_depths = depths
 
             # ---- complete flow ----
             pred_flows_bi, _ = self.fix_flow_complete.forward_bidirect_flow(
@@ -407,11 +432,13 @@ class Trainer:
             # pred_flows_bi = gt_flows_bi
 
             # ---- image propagation ----
-            prop_imgs, updated_local_masks = self.netG.img_propagation( # remove module, cm
-                masked_local_frames,
-                pred_flows_bi,
-                local_masks,
-                interpolation=self.interp_mode,
+            prop_imgs, updated_local_masks = (
+                self.netG.img_propagation(  # remove module, cm
+                    masked_local_frames,
+                    pred_flows_bi,
+                    local_masks,
+                    interpolation=self.interp_mode,
+                )
             )
             updated_masks = masks.clone()
             updated_masks[:, :l_t, ...] = updated_local_masks.view(b, l_t, 1, h, w)

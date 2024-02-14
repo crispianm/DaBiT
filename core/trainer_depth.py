@@ -291,14 +291,15 @@ class Trainer:
         print("train_data:", train_data.shape)
         while train_data is not None:
             self.iteration += 1
-            frames, masks, flows_f, flows_b, _ = train_data
-            frames, masks = frames.to(device), masks.to(device)
-            masks = masks.float()
+            frames, masks, depths, flows_f, flows_b, _ = train_data
+            frames, masks, depths = frames.to(device), masks.to(device), depths.to(device)
+            masks, depths = masks.float(), depths.float()
 
             l_t = self.num_local_frames
             b, t, c, h, w = frames.size()
             gt_local_frames = frames[:, :l_t, ...]
             local_masks = masks[:, :l_t, ...].contiguous()
+            local_depths = depths[:, :l_t, ...].contiguous()
 
             # get gt optical flow
             if flows_f[0] == "None" or flows_b[0] == "None":
