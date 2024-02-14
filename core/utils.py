@@ -99,48 +99,51 @@ def to_tensors():
 class GroupRandomHorizontalFlowFlip(object):
     """Randomly horizontally flips the given PIL.Image with a probability of 0.5"""
 
-    def __call__(self, img_group, flowF_group, flowB_group):
+    def __call__(self, img_group, mask_group, flowF_group, flowB_group):
         v = random.random()
         if v < 0.5:
             ret_img = [img.transpose(Image.FLIP_LEFT_RIGHT) for img in img_group]
+            ret_mask = [mask.transpose(Image.FLIP_LEFT_RIGHT) for mask in mask_group]
             ret_flowF = [ff[:, ::-1] * [-1.0, 1.0] for ff in flowF_group]
             ret_flowB = [fb[:, ::-1] * [-1.0, 1.0] for fb in flowB_group]
-            return ret_img, ret_flowF, ret_flowB
+            return ret_img, ret_mask, ret_flowF, ret_flowB
         else:
-            return img_group, flowF_group, flowB_group
+            return img_group, mask_group, flowF_group, flowB_group
 
 
 class GroupRandomHorizontalDepthFlip(object):
     """Randomly horizontally flips the given PIL.Image with a probability of 0.5"""
 
-    def __call__(self, img_group, depth_group, flowF_group, flowB_group):
+    def __call__(self, img_group, depth_group, mask_group, flowF_group, flowB_group):
         v = random.random()
         if v < 0.5:
             ret_img = [img.transpose(Image.FLIP_LEFT_RIGHT) for img in img_group]
             ret_depth = [
                 depth.transpose(Image.FLIP_LEFT_RIGHT) for depth in depth_group
             ]
+            ret_mask = [mask.transpose(Image.FLIP_LEFT_RIGHT) for mask in mask_group]
             ret_flowF = [ff[:, ::-1] * [-1.0, 1.0] for ff in flowF_group]
             ret_flowB = [fb[:, ::-1] * [-1.0, 1.0] for fb in flowB_group]
-            return ret_img, ret_depth, ret_flowF, ret_flowB
+            return ret_img, ret_depth, ret_mask, ret_flowF, ret_flowB
         else:
-            return img_group, depth_group, flowF_group, flowB_group
+            return img_group, depth_group, mask_group, flowF_group, flowB_group
 
 
 class GroupRandomHorizontalFlip(object):
     """Randomly horizontally flips the given PIL.Image with a probability of 0.5"""
 
-    def __call__(self, img_group, is_flow=False):
+    def __call__(self, img_group, mask_group, is_flow=False):
         v = random.random()
         if v < 0.5:
             ret = [img.transpose(Image.FLIP_LEFT_RIGHT) for img in img_group]
+            ret_mask = [mask.transpose(Image.FLIP_LEFT_RIGHT) for mask in mask_group]
             if is_flow:
                 for i in range(0, len(ret), 2):
                     # invert flow pixel values when flipping
                     ret[i] = ImageOps.invert(ret[i])
-            return ret
+            return ret, ret_mask
         else:
-            return img_group
+            return img_group, mask_group
 
 
 class Stack(object):

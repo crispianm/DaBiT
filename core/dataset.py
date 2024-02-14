@@ -153,17 +153,17 @@ class TrainDataset(torch.utils.data.Dataset):
                         flows_b = flows_
 
         if self.load_flow and not self.load_depth:
-            frames, flows_f, flows_b = GroupRandomHorizontalFlowFlip()(
-                frames, flows_f, flows_b
+            frames, masks, flows_f, flows_b = GroupRandomHorizontalFlowFlip()(
+                frames, masks, flows_f, flows_b
             )
         elif self.load_flow and self.load_depth:
-            frames, depths, flows_f, flows_b = GroupRandomHorizontalDepthFlip()(
-                frames, depths, flows_f, flows_b
+            frames, depths, masks, flows_f, flows_b = GroupRandomHorizontalDepthFlip()(
+                frames, depths, masks, flows_f, flows_b
             )
         else:
-            frames = GroupRandomHorizontalFlip()(frames)
+            frames, masks = GroupRandomHorizontalFlip()(frames, masks)
 
-        # normalizate, to tensors
+        # normalize to tensors
         frame_tensors = self._to_tensors(frames) * 2.0 - 1.0
         depth_tensors = self._to_tensors(depths)
         mask_tensors = self._to_tensors(masks)
