@@ -428,7 +428,16 @@ if __name__ == "__main__":
 
 
 def get_random_focus_depths():
+    """
+    Generate random focus depths for depth inpainting.
 
+    Returns:
+        tuple: A tuple containing the following values:
+            - d1 (float): The lower depth limit.
+            - d2 (float): The upper depth limit.
+            - v (float): The focus pull value.
+            - focal_point (float): The randomly generated focal point.
+    """
     # Define focal range
     window = random.uniform(0.3, 0.5)
     focal_point = random.uniform(0, 1)
@@ -450,7 +459,20 @@ def get_random_focus_depths():
 
 
 def generate_random_depth_mask(depth, d1, d2, v, focal_point):
+    """
+    Generate a random depth mask based on the given depth map and parameters.
 
+    Args:
+        depth (numpy.ndarray): The depth map.
+        d1 (float): The lower bound of the focal range.
+        d2 (float): The upper bound of the focal range.
+        v (float): The amount of focus pull.
+        focal_point (float): The focal point.
+
+    Returns:
+        tuple: A tuple containing the updated lower bound of the focal range, the updated upper bound of the focal range,
+               and the generated depth mask as a PIL Image object.
+    """
     # Scale depth to [0, 1]
     depth = depth / np.max(depth)
 
@@ -473,7 +495,16 @@ def generate_random_depth_mask(depth, d1, d2, v, focal_point):
 
 
 def get_blurred_frame(input_tensor, bk=None):
+    """
+    Apply a Gaussian blur to the input tensor.
 
+    Args:
+        input_tensor (torch.Tensor): The input tensor to be blurred.
+        bk (int, optional): The size of the Gaussian kernel. If None, a random kernel size will be chosen.
+
+    Returns:
+        tuple: A tuple containing the blurred tensor and the chosen kernel size.
+    """
     if bk is None:
         bk = random.choice(
             [3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23]
