@@ -389,7 +389,10 @@ class Trainer:
         print("\nEnd training....")
 
     def _train_epoch(self, pbar):
-        """Process input and calculate loss every training epoch"""
+        """
+        Process input and calculate loss every training epoch
+        """
+
         device = self.config["device"]
         train_data = self.prefetcher.next()
         while train_data is not None:
@@ -407,10 +410,11 @@ class Trainer:
             gt_local_frames = frames[:, :l_t, ...]
             local_masks = masks[:, :l_t, ...].contiguous()
 
+            # Get the masked frames, which are blurred at the nonzero region(s) of the mask
             masked_frames = get_blurred_masked_frames(frames, masks)
             masked_local_frames = masked_frames[:, :l_t, ...]
 
-            # get gt optical flow
+            # Get GT Optical Flow
             if flows_f[0] == "None" or flows_b[0] == "None":
                 gt_flows_bi = self.fix_raft(gt_local_frames)
             else:
@@ -422,18 +426,17 @@ class Trainer:
             #     completed_depth = self.depth_completion_model(depths * (1.0 - mask).float(), mask)
             completed_depths = depths
 
-            # ---- complete flow ----
+            # ---- Complete Flow ----
             pred_flows_bi, _ = self.fix_flow_complete.forward_bidirect_flow(
                 gt_flows_bi, local_masks
             )
             pred_flows_bi = self.fix_flow_complete.combine_flow(
                 gt_flows_bi, pred_flows_bi, local_masks
             )
-            # pred_flows_bi = gt_flows_bi
 
-            # ---- image propagation ----
+            # ---- Image Propagation ----
             prop_imgs, updated_local_masks = (
-                self.netG.img_propagation(  # remove module, cm
+                self.netG.img_propagation(
                     masked_local_frames,
                     pred_flows_bi,
                     local_masks,

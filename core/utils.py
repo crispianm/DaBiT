@@ -494,25 +494,22 @@ def generate_random_depth_mask(depth, d1, d2, v, focal_point):
     return d1, d2, Image.fromarray(mask).convert("L")
 
 
-def get_blurred_frame(input_tensor, bk=None):
+def get_blurred_frame(input_tensor, bk, sigma):
     """
     Apply a Gaussian blur to the input tensor.
 
     Args:
         input_tensor (torch.Tensor): The input tensor to be blurred.
-        bk (int, optional): The size of the Gaussian kernel. If None, a random kernel size will be chosen.
+        bk (int): The size of the Gaussian kernel.
 
     Returns:
-        tuple: A tuple containing the blurred tensor and the chosen kernel size.
+        blurred_tensor: A tensor containing the blurred image
     """
-    if bk is None:
-        bk = random.choice(
-            [3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23]
-        )  # Choose a random bk if bk is None
-    blur_transform = transforms.GaussianBlur(kernel_size=bk)
+
+    blur_transform = transforms.GaussianBlur(kernel_size=bk, sigma=sigma)
     blurred_tensor = blur_transform(input_tensor)
 
-    return blurred_tensor, bk
+    return blurred_tensor
 
 
 def get_blurred_masked_frames(frame_tensors, mask_tensors):
@@ -526,14 +523,18 @@ def get_blurred_masked_frames(frame_tensors, mask_tensors):
     Returns:
         torch.Tensor: Tensor containing the masked frames.
     """
-    masked_frames, bk = torch.zeros_like(frame_tensors), None
+    masked_frames = torch.zeros_like(frame_tensors)
 
     for i in range(len(frame_tensors)):
+
+        bk = random.choice([3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23])
+        sigma = random.uniform(0.1, 5.0)
+
         for j in range(len(frame_tensors[i])):
             frame = frame_tensors[i][j]
             mask = mask_tensors[i][j]
 
-            blurred_frame, bk = get_blurred_frame(frame, bk)
+            blurred_frame = get_blurred_frame(frame, bk, sigma)
 
             # Set nonzeros of mask to blurred image
             masked_frames[i][j] = torch.where(mask > 0, blurred_frame, frame)
