@@ -142,10 +142,14 @@ class Trainer:
         # TODO: check this works properly
         self.depth_completion_model = DepthCompletion().to(self.config["device"])
         data = torch.load(
-            "checkpoints/depth_completion.pth", map_location=self.config["device"]
+            "weights/depth_completion.pth", map_location=self.config["device"]
         )
         self.depth_completion_model.load_state_dict(data["netG"])
-        print("loading from: {}".format("checkpoints/depth_completion.pth"))
+        print(
+            "Loading DepthCompletion Network from: {}".format(
+                "weights/depth_completion.pth"
+            )
+        )
         self.depth_completion_model.eval()
 
     def setup_optimizers(self):
@@ -304,8 +308,8 @@ class Trainer:
             else:
                 if self.config["global_rank"] == 0:
                     print(
-                        "Warnning: There is no trained model found by trainer.py.\n"
-                        "An initialized model will be used."
+                        "Warning: There is no trained model found by trainer.py.\n"
+                        "A randomly initialized model will be used."
                     )
 
     def save(self, it):
@@ -435,13 +439,11 @@ class Trainer:
             )
 
             # ---- Image Propagation ----
-            prop_imgs, updated_local_masks = (
-                self.netG.img_propagation(
-                    masked_local_frames,
-                    pred_flows_bi,
-                    local_masks,
-                    interpolation=self.interp_mode,
-                )
+            prop_imgs, updated_local_masks = self.netG.img_propagation(
+                masked_local_frames,
+                pred_flows_bi,
+                local_masks,
+                interpolation=self.interp_mode,
             )
             updated_masks = masks.clone()
             updated_masks[:, :l_t, ...] = updated_local_masks.view(b, l_t, 1, h, w)
@@ -454,7 +456,12 @@ class Trainer:
 
             # ---- feature propagation + Transformer ----
             pred_imgs = self.netG(
-                updated_frames, pred_flows_bi, masks, updated_masks, l_t
+                updated_frames,
+                completed_depths,
+                pred_flows_bi,
+                masks,
+                updated_masks,
+                l_t,
             )
             pred_imgs = pred_imgs.view(b, -1, c, h, w)
 

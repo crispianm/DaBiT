@@ -242,7 +242,7 @@ class Encoder(nn.Module):
         self.group = [1, 2, 4, 8, 1]
         self.layers = nn.ModuleList(
             [
-                nn.Conv2d(5, 64, kernel_size=3, stride=2, padding=1),
+                nn.Conv2d(6, 64, kernel_size=3, stride=2, padding=1),
                 nn.LeakyReLU(0.2, inplace=True),
                 nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
                 nn.LeakyReLU(0.2, inplace=True),
@@ -345,9 +345,9 @@ class InpaintGenerator(BaseNetwork):
             self.init_weights()
 
         if model_path is not None:
-            print("Pretrained ProPainter has loaded...")
             ckpt = torch.load(model_path, map_location="cpu")
             self.load_state_dict(ckpt, strict=True)
+            print("Pretrained ProPainter has loaded.")
 
         # print network parameter number
         self.print_network()
@@ -365,6 +365,7 @@ class InpaintGenerator(BaseNetwork):
     def forward(
         self,
         masked_frames,
+        completed_depths,
         completed_flows,
         masks_in,
         masks_updated,
@@ -388,6 +389,7 @@ class InpaintGenerator(BaseNetwork):
                     masked_frames.view(b * t, 3, ori_h, ori_w),
                     masks_in.view(b * t, 1, ori_h, ori_w),
                     masks_updated.view(b * t, 1, ori_h, ori_w),
+                    completed_depths.view(b * t, 1, ori_h, ori_w),
                 ],
                 dim=1,
             )
@@ -397,6 +399,7 @@ class InpaintGenerator(BaseNetwork):
         ref_feat = enc_feat.view(b, t, c, h, w)[:, l_t:, ...]
         fold_feat_size = (h, w)
 
+        # flow and mask
         ds_flows_f = (
             F.interpolate(
                 completed_flows[0].view(-1, 2, ori_h, ori_w),
@@ -444,6 +447,8 @@ class InpaintGenerator(BaseNetwork):
 
         trans_feat = self.ss(enc_feat.view(-1, c, h, w), b, fold_feat_size)
         mask_pool_l = rearrange(mask_pool_l, "b t c h w -> b t h w c").contiguous()
+
+        # transformer
         trans_feat = self.transformers(
             trans_feat, fold_feat_size, mask_pool_l, t_dilation=t_dilation
         )

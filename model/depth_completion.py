@@ -793,6 +793,7 @@ def flow_warp(
     grid_y, grid_x = torch.meshgrid(
         torch.arange(0, h, dtype=x.dtype, device=x.device),
         torch.arange(0, w, dtype=x.dtype, device=x.device),
+        indexing="ij",
     )
     grid = torch.stack((grid_x, grid_y), 2).float()  # W(x), H(y), 2
     grid.requires_grad = False

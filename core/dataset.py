@@ -166,7 +166,7 @@ class TrainDataset(torch.utils.data.Dataset):
         # normalize to tensors
         frame_tensors = self._to_tensors(frames) * 2.0 - 1.0
         depth_tensors = self._to_tensors(depths)
-        mask_tensors = self._to_tensors(masks)
+        mask_tensors = self._to_tensors(masks) * 255.0
         if self.load_flow:
             flows_f = np.stack(flows_f, axis=-1)  # H W 2 T-1
             flows_b = np.stack(flows_b, axis=-1)

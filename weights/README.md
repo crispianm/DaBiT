@@ -9,5 +9,6 @@ weights
    |- recurrent_flow_completion.pth
    |- ProPainter.pth
    |- i3d_rgb_imagenet.pt (for evaluating VFID metric)
+   |- depth_completion.pth
    |- README.md
 ```
