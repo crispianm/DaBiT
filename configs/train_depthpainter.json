@@ -36,9 +36,9 @@
         "batch_size": 2,
         "num_workers": 0,
         "num_prefetch_queue": 8,
-        "log_freq": 1,
-        "save_freq": 10,
-        "iterations": 20,
+        "log_freq": 50,
+        "save_freq": 500,
+        "iterations": 500e3,
         "scheduler": {
             "type": "MultiStepLR",
             "milestones": [

@@ -455,6 +455,7 @@ class InpaintGenerator(BaseNetwork):
         trans_feat = self.sc(trans_feat, t, fold_feat_size)
         trans_feat = trans_feat.view(b, t, -1, h, w)
 
+        # residual 
         enc_feat = enc_feat + trans_feat
 
         if self.training:
