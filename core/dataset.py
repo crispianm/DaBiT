@@ -25,11 +25,12 @@ from core.utils import (
 
 
 class TrainDataset(torch.utils.data.Dataset):
-    def __init__(self, args: dict):
+    def __init__(self, args: dict, dataset: dict):
         self.args = args
-        self.depth_root = args["depth_root"]
-        self.video_root = args["video_root"]
-        self.flow_root = args["flow_root"]
+        self.depth_root = dataset["depth_root"]
+        self.video_root = dataset["video_root"]
+        self.flow_root = dataset["flow_root"]
+
         self.num_local_frames = args["num_local_frames"]
         self.num_ref_frames = args["num_ref_frames"]
         self.size = self.w, self.h = (args["w"], args["h"])
@@ -42,13 +43,17 @@ class TrainDataset(torch.utils.data.Dataset):
         if self.load_depth:
             assert os.path.exists(self.depth_root)
 
-        json_path = os.path.join("T:/ProPainter Datasets", args["name"], "train.json")
+        if dataset["name"] == "youtube-vos":
 
-        with open(json_path, "r") as f:
-            self.video_train_dict = json.load(f)
-        self.video_names = sorted(list(self.video_train_dict.keys()))
+            json_path = os.path.join(
+                self.video_root.split("youtube-vos")[0], "youtube-vos/train.json"
+            )
+            with open(json_path, "r") as f:
+                self.video_train_dict = json.load(f)
+            self.video_names = sorted(list(self.video_train_dict.keys()))
+        else:
+            self.video_names = sorted(os.listdir(self.video_root))
 
-        # self.video_names = sorted(os.listdir(self.video_root))
         self.video_dict = {}
         self.frame_dict = {}
 
@@ -73,6 +78,7 @@ class TrainDataset(torch.utils.data.Dataset):
         return len(self.video_names)
 
     def _sample_index(self, length, sample_length, num_ref_frame=3):
+
         complete_idx_set = list(range(length))
         pivot = random.randint(0, length - sample_length)
         local_idx = complete_idx_set[pivot : pivot + sample_length]
@@ -84,7 +90,12 @@ class TrainDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         video_name = self.video_names[index]
 
-        d1, d2, v, focal_point = get_random_focus_depths()
+        if self.args["use_blur_masks"]:
+            d1, d2, v, focal_point = get_random_focus_depths()
+        else:
+            all_masks = create_random_shape_with_random_motion(
+                self.video_dict[video_name], imageHeight=self.h, imageWidth=self.w
+            )
 
         # create sample index
         selected_index = self._sample_index(
@@ -120,9 +131,11 @@ class TrainDataset(torch.utils.data.Dataset):
             #     depth_tensors = []
             #     for idx in selected_index:
             # TODO add DepthAnything compatibility
-
-            d1, d2, mask = generate_random_depth_mask(depth, d1, d2, v, focal_point)
-            masks.append(mask)
+            if self.args["use_blur_masks"]:
+                d1, d2, mask = generate_random_depth_mask(depth, d1, d2, v, focal_point)
+                masks.append(mask)
+            else:
+                masks.append(all_masks[idx])
 
             if len(frames) <= self.num_local_frames - 1 and self.load_flow:
                 current_n = frame_list[idx][:-4]
@@ -330,3 +343,40 @@ class TestDataset(torch.utils.data.Dataset):
                 "None",
                 video_name,
             )
+
+
+class Sampler(torch.utils.data.Dataset):
+    def __init__(self, datasets, p_datasets=None, iter=False, samples_per_epoch=1000):
+        self.datasets = datasets
+        self.len_datasets = np.array([len(dataset) for dataset in self.datasets])
+        self.p_datasets = p_datasets
+        self.iter = iter
+
+        if p_datasets is None:
+            self.p_datasets = self.len_datasets / np.sum(self.len_datasets)
+
+        self.samples_per_epoch = samples_per_epoch
+
+        self.accum = [
+            0,
+        ]
+        for i, length in enumerate(self.len_datasets):
+            self.accum.append(self.accum[-1] + self.len_datasets[i])
+
+    def __getitem__(self, index):
+        if self.iter:
+            # iterate through all datasets
+            for i in range(len(self.accum)):
+                if index < self.accum[i]:
+                    return self.datasets[i - 1].__getitem__(index - self.accum[i - 1])
+        else:
+            # first sample a dataset
+            dataset = random.choices(self.datasets, self.p_datasets)[0]
+            # sample a sequence from the dataset
+            return dataset.__getitem__(random.randint(0, len(dataset) - 1))
+
+    def __len__(self):
+        if self.iter:
+            return int(np.sum(self.len_datasets))
+        else:
+            return self.samples_per_epoch

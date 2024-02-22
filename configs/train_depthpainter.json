@@ -1,25 +1,42 @@
 {
     "seed": 2023,
     "save_dir": "experiments_model/",
-    "train_data_loader": {
-        "name": "youtube-vos",
-        "video_root": "T:/ProPainter Datasets/youtube-vos/JPEGImages",
-        "flow_root": "T:/ProPainter Datasets/youtube-vos/flows/JPEGImages",
-        "depth_root": "T:/ProPainter Datasets/youtube-vos/depths/JPEGImages",
+    "dl_config": {
         "w": 432,
         "h": 240,
         "num_local_frames": 10,
         "num_ref_frames": 6,
         "load_flow": 1,
-        "load_depth": 1
+        "load_depth": 1,
+        "use_blur_masks": 1
+    },
+    "youtube-vos": {
+        "name": "youtube-vos",
+        "video_root": "T:/ProPainter Datasets/youtube-vos/JPEGImages",
+        "flow_root": "T:/ProPainter Datasets/youtube-vos/flows/JPEGImages",
+        "depth_root": "T:/ProPainter Datasets/youtube-vos/depths/JPEGImages"
+    },
+    "bvidvc": {
+        "name": "bvidvc",
+        "video_root": "T:/ProPainter Datasets/bvidvc/JPEGImages",
+        "flow_root": "T:/ProPainter Datasets/bvidvc/flows/JPEGImages",
+        "depth_root": "T:/ProPainter Datasets/bvidvc/depths/JPEGImages"
+    },
+    "low_light_10": {
+        "name": "low_light_10",
+        "video_root": "T:/ProPainter Datasets/low_light_10/JPEGImages",
+        "flow_root": "T:/ProPainter Datasets/low_light_10/flows/JPEGImages",
+        "depth_root": "T:/ProPainter Datasets/low_light_10/depths/JPEGImages"
     },
     "losses": {
         "hole_weight": 1,
         "valid_weight": 1,
         "flow_weight": 1,
+        "depth_weight": 1,
         "adversarial_weight": 0.01,
         "GAN_LOSS": "hinge",
-        "perceptual_weight": 0
+        "perceptual_weight": 0,
+        "kd_weight": 0
     },
     "model": {
         "net": "propainter",
@@ -33,12 +50,12 @@
         "beta1": 0,
         "beta2": 0.99,
         "lr": 1e-4,
-        "batch_size": 2,
+        "batch_size": 1,
         "num_workers": 0,
         "num_prefetch_queue": 8,
-        "log_freq": 50,
-        "save_freq": 500,
-        "iterations": 500e3,
+        "log_freq": 100,
+        "save_freq": 5000,
+        "iterations": 1000e3,
         "scheduler": {
             "type": "MultiStepLR",
             "milestones": [

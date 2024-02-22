@@ -15,12 +15,15 @@ from torch.utils.tensorboard import SummaryWriter
 
 from core.lr_scheduler import MultiStepRestartLR, CosineAnnealingRestartLR
 from core.loss import AdversarialLoss, PerceptualLoss, LPIPSLoss
-from core.dataset import TrainDataset
+from core.dataset import *
 from core.utils import get_blurred_masked_frames
 
 from model.modules.flow_comp_raft import RAFT_bi, FlowLoss, EdgeLoss
 from model.recurrent_flow_completion import RecurrentFlowCompleteNet
 from model.depth_completion import DepthCompletion
+from model.propainter import InpaintGenerator
+from utils.download_util import load_file_from_url
+
 
 from RAFT.utils.flow_viz_pt import flow_to_image
 
@@ -30,13 +33,17 @@ class Trainer:
         self.config = config
         self.epoch = 0
         self.iteration = 0
-        self.num_local_frames = config["train_data_loader"]["num_local_frames"]
-        self.num_ref_frames = config["train_data_loader"]["num_ref_frames"]
+        self.num_local_frames = config["dl_config"]["num_local_frames"]
+        self.num_ref_frames = config["dl_config"]["num_ref_frames"]
 
         # setup data set and data loader
-        self.train_dataset = TrainDataset(config["train_data_loader"])
+        youtube_vos_train = TrainDataset(config["dl_config"], config["youtube-vos"])
+        bvidvc_train = TrainDataset(config["dl_config"], config["bvidvc"])
+        low_light_10_train = TrainDataset(config["dl_config"], config["low_light_10"])
 
-        self.train_sampler = None
+        datasets_train = [youtube_vos_train, bvidvc_train, low_light_10_train]
+        self.train_sampler = Sampler(datasets_train, iter=True)
+
         self.train_args = config["trainer"]
         if config["distributed"]:
             self.train_sampler = DistributedSampler(
@@ -46,11 +53,10 @@ class Trainer:
             )
 
         dataloader_args = dict(
-            dataset=self.train_dataset,
+            dataset=self.train_sampler,
             batch_size=self.train_args["batch_size"] // config["world_size"],
-            shuffle=(self.train_sampler is None),
+            shuffle=True,
             num_workers=self.train_args["num_workers"],
-            sampler=self.train_sampler,
             drop_last=True,
         )
 
@@ -60,8 +66,11 @@ class Trainer:
         self.prefetcher = CPUPrefetcher(self.train_loader)
 
         # set loss functions
-        self.adversarial_loss = AdversarialLoss(type=self.config["losses"]["GAN_LOSS"])
-        self.adversarial_loss = self.adversarial_loss.to(self.config["device"])
+        if not self.config["model"]["no_dis"]:
+            self.adversarial_loss = AdversarialLoss(
+                type=self.config["losses"]["GAN_LOSS"]
+            )
+            self.adversarial_loss = self.adversarial_loss.to(self.config["device"])
         self.l1_loss = nn.L1Loss()
         # self.perc_loss = PerceptualLoss(
         #                     layer_weights={'conv3_4': 0.25, 'conv4_4': 0.25, 'conv5_4': 0.5},
@@ -89,6 +98,17 @@ class Trainer:
         self.fix_flow_complete.eval()
 
         # self.flow_loss = FlowLoss()
+
+        # # Setup teacher model
+        # teacher_ckpt_path = load_file_from_url(
+        #     url=os.path.join("./weights/ProPainter.pth"),
+        #     model_dir="weights",
+        #     progress=True,
+        #     file_name=None,
+        # )
+        # self.teacher_model = InpaintGenerator(model_path=teacher_ckpt_path).to(
+        #     self.config["device"]
+        # )
 
         # setup models including generator and discriminator
         net = importlib.import_module("model." + config["model"]["net"])
@@ -415,7 +435,11 @@ class Trainer:
             local_masks = masks[:, :l_t, ...].contiguous()
 
             # Get the masked frames, which are blurred at the nonzero region(s) of the mask
-            masked_frames = get_blurred_masked_frames(frames, masks)
+            if self.config["dl_config"]["use_blur_masks"]:
+                masked_frames = get_blurred_masked_frames(frames, masks)
+            else:
+                masked_frames = frames * (1 - masks)
+
             masked_local_frames = masked_frames[:, :l_t, ...]
 
             # Get GT Optical Flow
@@ -517,6 +541,24 @@ class Trainer:
                 gan_loss = gan_loss * self.config["losses"]["adversarial_weight"]
                 gen_loss += gan_loss
                 self.add_summary(self.gen_writer, "loss/gan_loss", gan_loss.item())
+
+            # # Knowledge Distillation Loss
+            # if self.config["losses"]["kd_weight"] > 0:
+            #     teacher_outputs = self.teacher_model(
+            #         updated_frames,
+            #         completed_depths,
+            #         pred_flows_bi,
+            #         masks,
+            #         updated_masks,
+            #         l_t,
+            #     ).view(b, -1, c, h, w)
+            #     kd_loss = (
+            #         self.l1_loss(teacher_outputs, pred_imgs)
+            #         * self.config["losses"]["kd_weight"]
+            #     )
+            #     gen_loss += kd_loss
+            #     self.add_summary(self.gen_writer, "loss/kd_loss", kd_loss.item())
+
             gen_loss.backward()
             self.optimG.step()
 
