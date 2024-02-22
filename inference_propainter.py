@@ -73,6 +73,19 @@ def read_frame_from_videos(frame_root):
     return frames, fps, size, video_name
 
 
+#  read depths of video
+def read_depths(depth_root):
+
+    depths = []
+    depth_lst = sorted(os.listdir(depth_root))
+    for fr in depth_lst:
+        depth = cv2.imread(os.path.join(depth_root, fr))
+        depth = Image.fromarray(cv2.cvtColor(depth, cv2.COLOR_BGR2RGB)).convert("L")
+        depths.append(depth)
+
+    return depths
+
+
 def binary_mask(mask, th=0.1):
     mask[mask > th] = 1
     mask[mask <= th] = 0
@@ -212,6 +225,12 @@ if __name__ == "__main__":
         help="Path of the mask(s) or mask folder.",
     )
     parser.add_argument(
+        "-d",
+        "--depths",
+        type=str,
+        help="Path of the depth(s) or depth folder.",
+    )
+    parser.add_argument(
         "-o",
         "--output",
         type=str,
@@ -303,6 +322,12 @@ if __name__ == "__main__":
     save_root = os.path.join(args.output, video_name)
     if not os.path.exists(save_root):
         os.makedirs(save_root, exist_ok=True)
+
+    if args.depths is not None:
+        depths = read_depths(args.depths)
+        depths, _, _ = resize_frames(depths, size)
+        depths = to_tensors()(depths).unsqueeze(0).to(device)
+        completed_depths = depths
 
     if args.mode == "video_inpainting":
         frames_len = len(frames)
@@ -475,7 +500,7 @@ if __name__ == "__main__":
             torch.cuda.empty_cache()
 
         # ---- image propagation ----
-        masked_frames = frames * (1 - masks_dilated)
+        masked_frames = frames
         subvideo_length_img_prop = min(
             100, args.subvideo_length
         )  # ensure a minimum of 100 frames for image propagation
@@ -552,6 +577,7 @@ if __name__ == "__main__":
             pred_flows_bi[0][:, neighbor_ids[:-1], :, :, :],
             pred_flows_bi[1][:, neighbor_ids[:-1], :, :, :],
         )
+        selected_depths = completed_depths[:, neighbor_ids + ref_ids, :, :, :]
 
         with torch.no_grad():
             # 1.0 indicates mask
@@ -560,6 +586,7 @@ if __name__ == "__main__":
             # pred_img = selected_imgs # results of image propagation
             pred_img = model(
                 selected_imgs,
+                selected_depths,
                 selected_pred_flows_bi,
                 selected_masks,
                 selected_update_masks,
