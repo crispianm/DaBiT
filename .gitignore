@@ -230,3 +230,4 @@ test_loading.ipynb
 plot_optical_flow.ipynb
 xperiments.ipynb
 xperiments.ipynb
+*.ipynb

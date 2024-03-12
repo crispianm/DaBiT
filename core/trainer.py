@@ -45,16 +45,10 @@ class Trainer:
         self.train_sampler = Sampler(datasets_train, iter=True)
 
         self.train_args = config["trainer"]
-        if config["distributed"]:
-            self.train_sampler = DistributedSampler(
-                self.train_dataset,
-                num_replicas=config["world_size"],
-                rank=config["global_rank"],
-            )
 
         dataloader_args = dict(
             dataset=self.train_sampler,
-            batch_size=self.train_args["batch_size"] // config["world_size"],
+            batch_size=self.train_args["batch_size"],
             shuffle=True,
             num_workers=self.train_args["num_workers"],
             drop_last=True,
@@ -72,20 +66,6 @@ class Trainer:
             )
             self.adversarial_loss = self.adversarial_loss.to(self.config["device"])
         self.l1_loss = nn.L1Loss()
-        # self.perc_loss = PerceptualLoss(
-        #                     layer_weights={'conv3_4': 0.25, 'conv4_4': 0.25, 'conv5_4': 0.5},
-        #                     use_input_norm=True,
-        #                     range_norm=True,
-        #                     criterion='l1'
-        #                     ).to(self.config['device'])
-
-        if self.config["losses"]["perceptual_weight"] > 0:
-            self.perc_loss = LPIPSLoss(use_input_norm=True, range_norm=True).to(
-                self.config["device"]
-            )
-
-        # self.flow_comp_loss = FlowCompletionLoss().to(self.config['device'])
-        # self.flow_comp_loss = FlowCompletionLoss(self.config['device'])
 
         # set raft
         self.fix_raft = RAFT_bi(device=self.config["device"])
@@ -97,18 +77,6 @@ class Trainer:
         self.fix_flow_complete.to(self.config["device"])
         self.fix_flow_complete.eval()
 
-        # self.flow_loss = FlowLoss()
-
-        # # Setup teacher model
-        # teacher_ckpt_path = load_file_from_url(
-        #     url=os.path.join("./weights/ProPainter.pth"),
-        #     model_dir="weights",
-        #     progress=True,
-        #     file_name=None,
-        # )
-        # self.teacher_model = InpaintGenerator(model_path=teacher_ckpt_path).to(
-        #     self.config["device"]
-        # )
 
         # setup models including generator and discriminator
         net = importlib.import_module("model." + config["model"]["net"])
@@ -132,31 +100,11 @@ class Trainer:
         self.setup_schedulers()
         self.load()
 
-        if config["distributed"]:
-            self.netG = DDP(
-                self.netG,
-                device_ids=[self.config["local_rank"]],
-                output_device=self.config["local_rank"],
-                broadcast_buffers=True,
-                find_unused_parameters=True,
-            )
-            if not self.config["model"]["no_dis"]:
-                self.netD = DDP(
-                    self.netD,
-                    device_ids=[self.config["local_rank"]],
-                    output_device=self.config["local_rank"],
-                    broadcast_buffers=True,
-                    find_unused_parameters=False,
-                )
 
         # set summary writer
-        self.dis_writer = None
         self.gen_writer = None
         self.summary = {}
-        if self.config["global_rank"] == 0 or (not config["distributed"]):
-            if not self.config["model"]["no_dis"]:
-                self.dis_writer = SummaryWriter(os.path.join(config["save_dir"], "dis"))
-            self.gen_writer = SummaryWriter(os.path.join(config["save_dir"], "gen"))
+        self.gen_writer = SummaryWriter(os.path.join(config["save_dir"], "gen"))
 
         # Add depth completion
         # TODO: check this works properly
@@ -280,8 +228,7 @@ class Trainer:
             dis_path = os.path.join(model_path, f"dis_{int(latest_epoch):06d}.pth")
             opt_path = os.path.join(model_path, f"opt_{int(latest_epoch):06d}.pth")
 
-            if self.config["global_rank"] == 0:
-                print(f"Loading model from {gen_path}...")
+            print(f"Loading model from {gen_path}...")
             dataG = torch.load(gen_path, map_location=self.config["device"])
             self.netG.load_state_dict(dataG)
             if not self.config["model"]["no_dis"] and self.config["model"]["load_d"]:
@@ -301,8 +248,7 @@ class Trainer:
             dis_path = self.config["trainer"].get("dis_path", None)
             opt_path = self.config["trainer"].get("opt_path", None)
             if gen_path is not None:
-                if self.config["global_rank"] == 0:
-                    print(f"Loading Gen-Net from {gen_path}...")
+                print(f"Loading Gen-Net from {gen_path}...")
                 dataG = torch.load(gen_path, map_location=self.config["device"])
                 self.netG.load_state_dict(dataG)
 
@@ -311,8 +257,7 @@ class Trainer:
                     and not self.config["model"]["no_dis"]
                     and self.config["model"]["load_d"]
                 ):
-                    if self.config["global_rank"] == 0:
-                        print(f"Loading Dis-Net from {dis_path}...")
+                    print(f"Loading Dis-Net from {dis_path}...")
                     dataD = torch.load(dis_path, map_location=self.config["device"])
                     self.netD.load_state_dict(dataD)
                 if opt_path is not None:
@@ -326,70 +271,67 @@ class Trainer:
                         self.optimD.load_state_dict(data_opt["optimD"])
                         self.scheD.load_state_dict(data_opt["scheD"])
             else:
-                if self.config["global_rank"] == 0:
-                    print(
-                        "Warning: There is no trained model found by trainer.py.\n"
-                        "A randomly initialized model will be used."
-                    )
+                print(
+                    "Warning: There is no trained model found by trainer.py.\n"
+                    "A randomly initialized model will be used."
+                )
 
     def save(self, it):
         """Save parameters every eval_epoch"""
-        if self.config["global_rank"] == 0:
-            # configure path
-            gen_path = os.path.join(self.config["save_dir"], f"gen_{it:06d}.pth")
-            dis_path = os.path.join(self.config["save_dir"], f"dis_{it:06d}.pth")
-            opt_path = os.path.join(self.config["save_dir"], f"opt_{it:06d}.pth")
-            print(f"\nsaving model to {gen_path} ...")
+        # configure path
+        gen_path = os.path.join(self.config["save_dir"], f"gen_{it:06d}.pth")
+        dis_path = os.path.join(self.config["save_dir"], f"dis_{it:06d}.pth")
+        opt_path = os.path.join(self.config["save_dir"], f"opt_{it:06d}.pth")
+        print(f"\nsaving model to {gen_path} ...")
 
-            # remove .module for saving
-            if isinstance(self.netG, torch.nn.DataParallel) or isinstance(
-                self.netG, DDP
-            ):
-                print("remove .module of netG")
-                netG = self.netG.module
-                if not self.config["model"]["no_dis"]:
-                    netD = self.netD.module
-            else:
-                netG = self.netG
-                if not self.config["model"]["no_dis"]:
-                    netD = self.netD
-
-            # save checkpoints
-            torch.save(netG.state_dict(), gen_path)
+        # remove .module for saving
+        if isinstance(self.netG, torch.nn.DataParallel) or isinstance(
+            self.netG, DDP
+        ):
+            print("remove .module of netG")
+            netG = self.netG.module
             if not self.config["model"]["no_dis"]:
-                torch.save(netD.state_dict(), dis_path)
-                torch.save(
-                    {
-                        "epoch": self.epoch,
-                        "iteration": self.iteration,
-                        "optimG": self.optimG.state_dict(),
-                        "optimD": self.optimD.state_dict(),
-                        "scheG": self.scheG.state_dict(),
-                        "scheD": self.scheD.state_dict(),
-                    },
-                    opt_path,
-                )
-            else:
-                torch.save(
-                    {
-                        "epoch": self.epoch,
-                        "iteration": self.iteration,
-                        "optimG": self.optimG.state_dict(),
-                        "scheG": self.scheG.state_dict(),
-                    },
-                    opt_path,
-                )
+                netD = self.netD.module
+        else:
+            netG = self.netG
+            if not self.config["model"]["no_dis"]:
+                netD = self.netD
 
-            latest_path = os.path.join(self.config["save_dir"], "latest.ckpt")
-            os.system(f"echo {it:06d} > {latest_path}")
+        # save checkpoints
+        torch.save(netG.state_dict(), gen_path)
+        if not self.config["model"]["no_dis"]:
+            torch.save(netD.state_dict(), dis_path)
+            torch.save(
+                {
+                    "epoch": self.epoch,
+                    "iteration": self.iteration,
+                    "optimG": self.optimG.state_dict(),
+                    "optimD": self.optimD.state_dict(),
+                    "scheG": self.scheG.state_dict(),
+                    "scheD": self.scheD.state_dict(),
+                },
+                opt_path,
+            )
+        else:
+            torch.save(
+                {
+                    "epoch": self.epoch,
+                    "iteration": self.iteration,
+                    "optimG": self.optimG.state_dict(),
+                    "scheG": self.scheG.state_dict(),
+                },
+                opt_path,
+            )
+
+        latest_path = os.path.join(self.config["save_dir"], "latest.ckpt")
+        os.system(f"echo {it:06d} > {latest_path}")
 
     def train(self):
         """training entry"""
         pbar = range(int(self.train_args["iterations"]))
-        if self.config["global_rank"] == 0:
-            pbar = tqdm(
-                pbar, initial=self.iteration, dynamic_ncols=True, smoothing=0.01
-            )
+        pbar = tqdm(
+            pbar, initial=self.iteration, dynamic_ncols=True, smoothing=0.01
+        )
 
         os.makedirs("logs", exist_ok=True)
 
@@ -405,8 +347,6 @@ class Trainer:
         while True:
             self.epoch += 1
             self.prefetcher.reset()
-            if self.config["distributed"]:
-                self.train_sampler.set_epoch(self.epoch)
             self._train_epoch(pbar)
             if self.iteration > self.train_args["iterations"]:
                 break
@@ -498,6 +438,7 @@ class Trainer:
 
             gen_loss = 0
             dis_loss = 0
+            
             # optimize net_g
             if not self.config["model"]["no_dis"]:
                 for p in self.netD.parameters():
@@ -604,9 +545,9 @@ class Trainer:
                 img_results = torch.cat(
                     [
                         masked_local_frames[0][t],
-                        gt_local_frames_cpu[0][t],
                         prop_local_frames_cpu[0][t],
                         pred_local_frames_cpu[0][t],
+                        gt_local_frames_cpu[0][t],
                     ],
                     1,
                 )
@@ -623,9 +564,9 @@ class Trainer:
                     img_results = torch.cat(
                         [
                             masked_local_frames[0][t],
-                            gt_local_frames_cpu[0][t],
                             prop_local_frames_cpu[0][t],
                             pred_local_frames_cpu[0][t],
+                            gt_local_frames_cpu[0][t],
                         ],
                         1,
                     )
@@ -658,38 +599,37 @@ class Trainer:
                         )
 
             # console logs
-            if self.config["global_rank"] == 0:
-                pbar.update(1)
+            pbar.update(1)
+            if not self.config["model"]["no_dis"]:
+                pbar.set_description(
+                    (
+                        f"d: {dis_loss.item():.3f}; "
+                        f"hole: {hole_loss.item():.3f}; "
+                        f"valid: {valid_loss.item():.3f}"
+                    )
+                )
+            else:
+                pbar.set_description(
+                    (
+                        f"hole: {hole_loss.item():.3f}; "
+                        f"valid: {valid_loss.item():.3f}"
+                    )
+                )
+
+            if self.iteration % self.train_args["log_freq"] == 0:
                 if not self.config["model"]["no_dis"]:
-                    pbar.set_description(
-                        (
-                            f"d: {dis_loss.item():.3f}; "
-                            f"hole: {hole_loss.item():.3f}; "
-                            f"valid: {valid_loss.item():.3f}"
-                        )
+                    logging.info(
+                        f"[Iter {self.iteration}] "
+                        f"d: {dis_loss.item():.4f}; "
+                        f"hole: {hole_loss.item():.4f}; "
+                        f"valid: {valid_loss.item():.4f}"
                     )
                 else:
-                    pbar.set_description(
-                        (
-                            f"hole: {hole_loss.item():.3f}; "
-                            f"valid: {valid_loss.item():.3f}"
-                        )
+                    logging.info(
+                        f"[Iter {self.iteration}] "
+                        f"hole: {hole_loss.item():.4f}; "
+                        f"valid: {valid_loss.item():.4f}"
                     )
-
-                if self.iteration % self.train_args["log_freq"] == 0:
-                    if not self.config["model"]["no_dis"]:
-                        logging.info(
-                            f"[Iter {self.iteration}] "
-                            f"d: {dis_loss.item():.4f}; "
-                            f"hole: {hole_loss.item():.4f}; "
-                            f"valid: {valid_loss.item():.4f}"
-                        )
-                    else:
-                        logging.info(
-                            f"[Iter {self.iteration}] "
-                            f"hole: {hole_loss.item():.4f}; "
-                            f"valid: {valid_loss.item():.4f}"
-                        )
 
             # saving models
             if self.iteration % self.train_args["save_freq"] == 0:

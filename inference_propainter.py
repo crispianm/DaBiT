@@ -18,6 +18,9 @@ from utils.download_util import load_file_from_url
 from core.utils import to_tensors
 from model.misc import get_device
 
+from depth_anything.dpt import DepthAnything
+from depth_anything.util.transform import Resize, NormalizeImage, PrepareForNet
+
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -228,6 +231,7 @@ if __name__ == "__main__":
         "-d",
         "--depths",
         type=str,
+        default=None,
         help="Path of the depth(s) or depth folder.",
     )
     parser.add_argument(
@@ -328,6 +332,9 @@ if __name__ == "__main__":
         depths, _, _ = resize_frames(depths, size)
         depths = to_tensors()(depths).unsqueeze(0).to(device)
         completed_depths = depths
+    else:
+        print("No depth maps provided, use provided script to compute depth maps.")
+        raise NotImplementedError
 
     if args.mode == "video_inpainting":
         frames_len = len(frames)
@@ -400,7 +407,7 @@ if __name__ == "__main__":
     # set up ProPainter model
     ##############################################
     ckpt_path = load_file_from_url(
-        url=os.path.join(pretrain_model_url, "ProPainter.pth"),
+        url=os.path.join(pretrain_model_url, "gen_330000.pth"),
         model_dir="weights",
         progress=True,
         file_name=None,

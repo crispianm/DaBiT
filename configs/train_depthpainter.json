@@ -1,6 +1,6 @@
 {
     "seed": 2023,
-    "save_dir": "experiments_model/",
+    "save_dir": "output/",
     "dl_config": {
         "w": 432,
         "h": 240,
@@ -53,7 +53,7 @@
         "batch_size": 1,
         "num_workers": 0,
         "num_prefetch_queue": 8,
-        "log_freq": 100,
+        "log_freq": 10,
         "save_freq": 5000,
         "iterations": 1000e3,
         "scheduler": {
