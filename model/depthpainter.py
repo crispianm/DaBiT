@@ -242,7 +242,7 @@ class Encoder(nn.Module):
         self.group = [1, 2, 4, 8, 1]
         self.layers = nn.ModuleList(
             [
-                nn.Conv2d(5, 64, kernel_size=3, stride=2, padding=1),
+                nn.Conv2d(6, 64, kernel_size=3, stride=2, padding=1),
                 nn.LeakyReLU(0.2, inplace=True),
                 nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
                 nn.LeakyReLU(0.2, inplace=True),
@@ -296,9 +296,9 @@ class deconv(nn.Module):
         return self.conv(x)
 
 
-class ProPainter(BaseNetwork):
+class DepthPainter(BaseNetwork):
     def __init__(self, init_weights=True, model_path=None):
-        super(ProPainter, self).__init__()
+        super(DepthPainter, self).__init__()
         channel = 128
         hidden = 512
 
@@ -365,6 +365,7 @@ class ProPainter(BaseNetwork):
     def forward(
         self,
         masked_frames,
+        completed_depths,
         completed_flows,
         masks_in,
         masks_updated,
@@ -388,6 +389,7 @@ class ProPainter(BaseNetwork):
                     masked_frames.view(b * t, 3, ori_h, ori_w),
                     masks_in.view(b * t, 1, ori_h, ori_w),
                     masks_updated.view(b * t, 1, ori_h, ori_w),
+                    completed_depths.view(b * t, 1, ori_h, ori_w),
                 ],
                 dim=1,
             )

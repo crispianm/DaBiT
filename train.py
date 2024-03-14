@@ -1,18 +1,18 @@
 import os
 import json
 import argparse
-import subprocess
 
 from shutil import copyfile
-import torch.distributed as dist
 
 import torch
-import torch.multiprocessing as mp
 
 import core
 import core.trainer
-import core.trainer_flow_w_edge
-import core.trainer_depth
+from core.dataset import *
+from torch.utils.data import DataLoader
+from model.propainter import ProPainter
+from model.depthpainter import DepthPainter
+from core.prefetch_dataloader import PrefetchDataLoader, CPUPrefetcher
 
 
 from torch.utils.tensorboard import SummaryWriter
@@ -20,29 +20,7 @@ from torch.utils.tensorboard import SummaryWriter
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 
-from core.dist import (
-    get_world_size,
-    get_local_rank,
-    get_global_rank,
-    get_master_ip,
-)
-
-
 def main(config):
-
-    config["save_dir"] = os.path.join(
-        config["save_dir"],
-        "{}_{}".format(
-            config["model"]["net"], os.path.basename(args.config).split(".")[0]
-        ),
-    )
-
-    config["save_metric_dir"] = os.path.join(
-        "./scores",
-        "{}_{}".format(
-            config["model"]["net"], os.path.basename(args.config).split(".")[0]
-        ),
-    )
 
     if torch.cuda.is_available():
         config["device"] = torch.device("cuda")
@@ -51,28 +29,65 @@ def main(config):
         config["device"] = "cpu"
         print("No GPU found, using CPU instead")
 
-    os.makedirs(config["save_dir"], exist_ok=True)
-    config_path = os.path.join(config["save_dir"], args.config.split("/")[-1])
+    # Dataset and Sampler
+    train_args = config["trainer"]
+    youtube_vos_train = TrainDataset(config["dl_config"], config["youtube-vos"])
+    bvidvc_train = TrainDataset(config["dl_config"], config["bvidvc"])
+    low_light_10_train = TrainDataset(config["dl_config"], config["low_light_10"])
+    # valid_set = TestDataset(config)
+    datasets_train = [low_light_10_train, youtube_vos_train, bvidvc_train]
+    train_sampler = Sampler(datasets_train, iter=True)
+
+    # DataLoaders
+    train_loader = DataLoader(
+        dataset=train_sampler,
+        batch_size=config["trainer"]["batch_size"],
+        shuffle=True,
+        num_workers=0,
+    )
+    dataloader_args = dict(
+        dataset=train_sampler,
+        batch_size=train_args["batch_size"],
+        shuffle=True,
+        num_workers=train_args["num_workers"],
+        drop_last=True,
+    )
+
+    train_loader = PrefetchDataLoader(
+        train_args["num_prefetch_queue"], **dataloader_args
+    )
+    prefetcher = CPUPrefetcher(train_loader)
+
+    config["out_dir"] = os.path.join(
+        config["out_dir"],
+        "{}_{}".format(config["net"], os.path.basename(args.config).split(".")[0]),
+    )
+    os.makedirs(config["out_dir"], exist_ok=True)
+    config_path = os.path.join(config["out_dir"], args.config.split("/")[-1])
     if not os.path.isfile(config_path):
         copyfile(args.config, config_path)
-    print("[**] create folder {}".format(config["save_dir"]))
 
-    trainer_version = config["trainer"]["version"]
-    trainer = core.__dict__[trainer_version].__dict__["Trainer"](config)
+    print("==> Created {}".format(config["out_dir"]))
 
+    # Model and Trainer
+    model = DepthPainter(config).to(config["device"])
+    print(config["net"], "network created")
+
+    teacher = ProPainter().to(config["device"])
+    teacher.load_state_dict(torch.load("./weights/ProPainter.pth"))
+    teacher.eval()
+    print("Teacher network created")
+
+    trainer = core.trainer.Trainer(config, prefetcher, model, teacher)
     trainer.train()
 
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-
     parser.add_argument(
         "-c", "--config", default="configs/train_depthpainter.json", type=str
     )
-
     args = parser.parse_args()
-
     config = json.load(open(args.config))
-
     main(config)

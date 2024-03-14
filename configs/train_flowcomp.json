@@ -1,6 +1,6 @@
 {
     "seed": 2023,
-    "save_dir": "experiments_model/",
+    "out_dir": "experiments_model/",
     "train_data_loader": {
         "name": "youtube-vos",
         "video_root": "T:/ProPainter Datasets/youtube-vos/JPEGImages",
