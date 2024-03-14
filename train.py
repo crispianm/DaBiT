@@ -73,10 +73,12 @@ def main(config):
     model = DepthPainter(config).to(config["device"])
     print(config["net"], "network created")
 
-    teacher = ProPainter().to(config["device"])
+    teacher = ProPainter()
     teacher.load_state_dict(torch.load("./weights/ProPainter.pth"))
+    for p in teacher.parameters():
+        p.requires_grad = False
+    teacher.to(config["device"])
     teacher.eval()
-    print("Teacher network created")
 
     trainer = core.trainer.Trainer(config, prefetcher, model, teacher)
     trainer.train()

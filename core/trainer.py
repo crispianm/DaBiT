@@ -136,30 +136,32 @@ class Trainer:
     def load(self):
         """Load DepthPainter"""
         # get the latest checkpoint
-        model_path = self.config["out_dir"]
         # TODO: add resume name
-        if os.path.isfile(os.path.join(model_path, "latest.ckpt")):
+        if os.path.isfile(os.path.join(self.config["out_dir"], "latest.ckpt")):
             latest_epoch = (
-                open(os.path.join(model_path, "latest.ckpt"), "r")
+                open(os.path.join(self.config["out_dir"], "latest.ckpt"), "r")
                 .read()
                 .splitlines()[-1]
             )
         else:
             ckpts = [
                 os.path.basename(i).split(".pth")[0]
-                for i in glob.glob(os.path.join(model_path, "*.pth"))
+                for i in glob.glob(os.path.join(self.config["out_dir"], "*.pth"))
             ]
             ckpts.sort()
             latest_epoch = ckpts[-1][4:] if len(ckpts) > 0 else None
 
         if latest_epoch is not None:
-            model_path = os.path.join(model_path, f"model_{int(latest_epoch):06d}.pth")
-            dis_path = os.path.join(model_path, f"dis_{int(latest_epoch):06d}.pth")
-            opt_path = os.path.join(model_path, f"opt_{int(latest_epoch):06d}.pth")
+            model_path = os.path.join(
+                self.config["out_dir"], f"model_{int(latest_epoch):06d}.pth"
+            )
+            opt_path = os.path.join(
+                self.config["out_dir"], f"opt_{int(latest_epoch):06d}.pth"
+            )
 
-            print(f"Loading model from {model_path}...")
-            dataG = torch.load(model_path, map_location=self.device)
-            self.model.load_state_dict(dataG)
+            print(f"Loading model from {model_path}")
+            model_data = torch.load(model_path, map_location=self.device)
+            self.model.load_state_dict(model_data)
 
             data_opt = torch.load(opt_path, map_location=self.device)
             self.optimizer.load_state_dict(data_opt["optimG"])
@@ -170,9 +172,9 @@ class Trainer:
             model_path = self.config["trainer"].get("model_path", None)
             opt_path = self.config["trainer"].get("opt_path", None)
             if model_path is not None:
-                print(f"Loading Gen-Net from {model_path}...")
-                dataG = torch.load(model_path, map_location=self.device)
-                self.model.load_state_dict(dataG)
+                print(f"Loading Gen-Net from {model_path}")
+                model_data = torch.load(model_path, map_location=self.device)
+                self.model.load_state_dict(model_data)
 
                 if opt_path is not None:
                     data_opt = torch.load(opt_path, map_location=self.device)
@@ -190,7 +192,7 @@ class Trainer:
         # configure path
         model_path = os.path.join(self.config["out_dir"], f"model_{it:06d}.pth")
         opt_path = os.path.join(self.config["out_dir"], f"opt_{it:06d}.pth")
-        print(f"\nsaving model to {model_path} ...")
+        print(f"\nsaving model to {model_path} ")
 
         # remove .module for saving
         model = self.model
@@ -242,8 +244,14 @@ class Trainer:
 
             l_t = self.num_local_frames
             b, t, c, h, w = frames.size()
-            gt_local_frames = frames[:, :l_t, ...]
-            local_masks = masks[:, :l_t, ...].contiguous()
+            gt_local_frames = frames[
+                :,
+                :l_t,
+            ]
+            local_masks = masks[
+                :,
+                :l_t,
+            ].contiguous()
 
             # Get the masked frames, which are blurred at the nonzero region(s) of the mask
             if self.config["dl_config"]["use_blur_masks"]:
@@ -251,7 +259,10 @@ class Trainer:
             else:
                 masked_frames = frames * (1 - masks)
 
-            masked_local_frames = masked_frames[:, :l_t, ...]
+            masked_local_frames = masked_frames[
+                :,
+                :l_t,
+            ]
 
             # Get GT Optical Flow
             if flows_f[0] == "None" or flows_b[0] == "None":
@@ -281,13 +292,19 @@ class Trainer:
                 interpolation=self.interp_mode,
             )
             updated_masks = masks.clone()
-            updated_masks[:, :l_t, ...] = updated_local_masks.view(b, l_t, 1, h, w)
+            updated_masks[
+                :,
+                :l_t,
+            ] = updated_local_masks.view(b, l_t, 1, h, w)
             updated_frames = masked_frames.clone()
             prop_local_frames = (
                 gt_local_frames * (1 - local_masks)
                 + prop_imgs.view(b, l_t, 3, h, w) * local_masks
-            )  # merge
-            updated_frames[:, :l_t, ...] = prop_local_frames
+            )
+            updated_frames[
+                :,
+                :l_t,
+            ] = prop_local_frames
 
             # ---- feature propagation + Transformer ----
             pred_imgs = self.model(
@@ -301,62 +318,56 @@ class Trainer:
             pred_imgs = pred_imgs.view(b, -1, c, h, w)
 
             # get the local frames
-            pred_local_frames = pred_imgs[:, :l_t, ...]
-            comp_local_frames = (
-                gt_local_frames * (1.0 - local_masks) + pred_local_frames * local_masks
-            )
-            comp_imgs = frames * (1.0 - masks) + pred_imgs * masks
+            pred_local_frames = pred_imgs[
+                :,
+                :l_t,
+            ]
+            # comp_local_frames = (
+            #     gt_local_frames * (1.0 - local_masks) + pred_local_frames * local_masks
+            # )
+            # comp_imgs = frames * (1.0 - masks) + pred_imgs * masks
 
             self.optimizer.zero_grad()
 
-            # generator l1 loss
+            # Student l1 loss
             hole_loss = self.l1_loss(pred_imgs * masks, frames * masks)
             hole_loss = (
-                hole_loss / torch.mean(masks) * self.config["losses"]["hole_weight"]
+                hole_loss / torch.mean(masks) * self.config["trainer"]["hole_weight"]
             )
-            self.add_summary(self.writer, "loss/hole_loss", hole_loss.item())
-
             valid_loss = self.l1_loss(pred_imgs * (1 - masks), frames * (1 - masks))
             valid_loss = (
                 valid_loss
                 / torch.mean(1 - masks)
-                * self.config["losses"]["valid_weight"]
+                * self.config["trainer"]["valid_weight"]
             )
+            self.add_summary(self.writer, "loss/hole_loss", hole_loss.item())
             self.add_summary(self.writer, "loss/valid_loss", valid_loss.item())
-
-            # perceptual loss
-            if self.config["losses"]["perceptual_weight"] > 0:
-                perc_loss = (
-                    self.perc_loss(
-                        pred_imgs.view(-1, 3, h, w), frames.view(-1, 3, h, w)
-                    )[0]
-                    * self.config["losses"]["perceptual_weight"]
-                )
-                self.add_summary(self.writer, "loss/perc_loss", perc_loss.item())
 
             # Knowledge Distillation Loss
             teacher_outputs = self.teacher_model(
-                updated_frames,
+                updated_frames
+                * (1 - updated_masks),  # Replace blur with zeros for teacher model
                 pred_flows_bi,
                 masks,
                 updated_masks,
                 l_t,
             ).view(b, -1, c, h, w)
+
             kd_loss = (
-                self.l1_loss(teacher_outputs, pred_local_frames)
-                * self.config["losses"]["kd_weight"]
+                self.l1_loss(pred_local_frames, teacher_outputs)
+                * self.config["trainer"]["kd_weight"]
             )
             self.add_summary(self.writer, "loss/kd_loss", kd_loss.item())
 
-            total_loss = 0.1 * hole_loss + 0.1 * valid_loss + 0.9 * kd_loss
-            self.add_summary(self.writer, "loss/total_loss", total_loss.item())
+            total_loss = hole_loss + valid_loss + kd_loss
+            self.add_summary(self.writer, "loss/zz_total_loss", total_loss.item())
             total_loss.backward()
             self.optimizer.step()
 
             self.update_learning_rate()
 
             # write image to tensorboard
-            if self.iteration % 200 == 0:
+            if self.iteration % 50 == 0:
                 # img to cpu
                 t = 0
                 gt_local_frames_cpu = (

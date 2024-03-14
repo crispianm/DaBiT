@@ -36,7 +36,7 @@
         "adversarial_weight": 0.01,
         "GAN_LOSS": "hinge",
         "perceptual_weight": 0,
-        "kd_weight": 1
+        "kd_weight": 0.1
     },
     "net": "depthpainter",
     "interp_mode": "nearest",
@@ -50,7 +50,7 @@
         "num_workers": 0,
         "num_prefetch_queue": 8,
         "log_freq": 1,
-        "save_freq": 5000,
+        "save_freq": 100,
         "iterations": 1000e3,
         "scheduler": {
             "type": "MultiStepLR",
