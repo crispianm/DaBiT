@@ -231,3 +231,4 @@ plot_optical_flow.ipynb
 xperiments.ipynb
 xperiments.ipynb
 *.ipynb
+/output

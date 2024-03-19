@@ -13,7 +13,7 @@ import torchvision
 
 from model.modules.flow_comp_raft import RAFT_bi
 from model.recurrent_flow_completion import RecurrentFlowCompleteNet
-from model.propainter import InpaintGenerator
+from model.depthpainter import DepthPainter
 from utils.download_util import load_file_from_url
 from core.utils import to_tensors
 from model.misc import get_device
@@ -412,7 +412,7 @@ if __name__ == "__main__":
         progress=True,
         file_name=None,
     )
-    model = InpaintGenerator(model_path=ckpt_path).to(device)
+    model = DepthPainter(model_path=ckpt_path).to(device)
     model.eval()
 
     ##############################################

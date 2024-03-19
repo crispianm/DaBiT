@@ -2,25 +2,17 @@ import os
 import json
 import random
 
-import cv2
-from PIL import Image
 import numpy as np
 
 import torch
 import torchvision.transforms as transforms
+import torchvision.io as io
 
-from utils.file_client import FileClient
-from utils.img_util import imfrombytes
 from utils.flow_util import resize_flow, flowread
 from core.utils import (
-    create_random_shape_with_random_motion,
-    Stack,
-    ToTorchFormatTensor,
-    GroupRandomHorizontalFlip,
-    GroupRandomHorizontalFlowFlip,
     GroupRandomHorizontalDepthFlip,
+    blur_with_depth,
     get_random_focus_depths,
-    generate_random_depth_mask,
 )
 
 
@@ -66,14 +58,6 @@ class TrainDataset(torch.utils.data.Dataset):
 
         self.video_names = list(self.video_dict.keys())  # update names
 
-        self._to_tensors = transforms.Compose(
-            [
-                Stack(),
-                ToTorchFormatTensor(),
-            ]
-        )
-        self.file_client = FileClient("disk")
-
     def __len__(self):
         return len(self.video_names)
 
@@ -91,11 +75,8 @@ class TrainDataset(torch.utils.data.Dataset):
         video_name = self.video_names[index]
 
         if self.args["use_blur_masks"]:
-            d1, d2, v, focal_point = get_random_focus_depths()
-        else:
-            all_masks = create_random_shape_with_random_motion(
-                self.video_dict[video_name], imageHeight=self.h, imageWidth=self.w
-            )
+            window, step, focal_point = get_random_focus_depths()
+            max_blur = random.randint(3, 13)
 
         # create sample index
         selected_index = self._sample_index(
@@ -104,6 +85,7 @@ class TrainDataset(torch.utils.data.Dataset):
 
         # read video frames
         frames = []
+        blurred_frames = []
         masks = []
         depths = []
         flows_f, flows_b = [], []
@@ -111,11 +93,7 @@ class TrainDataset(torch.utils.data.Dataset):
         for idx in selected_index:
             frame_list = self.frame_dict[video_name]
             img_path = os.path.join(self.video_root, video_name, frame_list[idx])
-            img_bytes = self.file_client.get(img_path, "img")
-            img = imfrombytes(img_bytes, float32=False)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = cv2.resize(img, self.size, interpolation=cv2.INTER_LINEAR)
-            img = Image.fromarray(img)
+            img = io.read_image(img_path)
 
             frames.append(img)
 
@@ -123,19 +101,27 @@ class TrainDataset(torch.utils.data.Dataset):
                 depth_path = os.path.join(
                     self.depth_root, video_name, frame_list[idx][:-4] + "_depth.png"
                 )
-                depth = (
-                    Image.open(depth_path).resize(self.size, Image.NEAREST).convert("L")
-                )
+                depth = io.read_image(depth_path)[0]
                 depths.append(depth)
-            # else:
-            #     depth_tensors = []
-            #     for idx in selected_index:
-            # TODO add DepthAnything compatibility
-            if self.args["use_blur_masks"]:
-                d1, d2, mask = generate_random_depth_mask(depth, d1, d2, v, focal_point)
-                masks.append(mask)
             else:
-                masks.append(all_masks[idx])
+                raise ValueError("Depth not loaded")
+
+            if self.args["use_blur_masks"]:
+
+                blurred_image, blur_mask = blur_with_depth(
+                    img,
+                    depth,
+                    0,
+                    max_blur,
+                    focal_point,
+                    100,
+                    sigma=5,
+                    num_layers=10,
+                )
+                focal_point += step
+
+                blurred_frames.append(blurred_image)
+                masks.append(blur_mask / torch.max(blur_mask))
 
             if len(frames) <= self.num_local_frames - 1 and self.load_flow:
                 current_n = frame_list[idx][:-4]
@@ -156,6 +142,7 @@ class TrainDataset(torch.utils.data.Dataset):
             if len(frames) == self.num_local_frames:  # random reverse
                 if random.random() < 0.5:
                     frames.reverse()
+                    blurred_frames.reverse()
                     depths.reverse()
                     masks.reverse()
                     if self.load_flow:
@@ -165,21 +152,23 @@ class TrainDataset(torch.utils.data.Dataset):
                         flows_f = flows_b
                         flows_b = flows_
 
-        if self.load_flow and not self.load_depth:
-            frames, masks, flows_f, flows_b = GroupRandomHorizontalFlowFlip()(
-                frames, masks, flows_f, flows_b
-            )
-        elif self.load_flow and self.load_depth:
-            frames, depths, masks, flows_f, flows_b = GroupRandomHorizontalDepthFlip()(
-                frames, depths, masks, flows_f, flows_b
-            )
-        else:
-            frames, masks = GroupRandomHorizontalFlip()(frames, masks)
+        (
+            frames,
+            blurred_frames,
+            depths,
+            masks,
+            flows_f,
+            flows_b,
+        ) = GroupRandomHorizontalDepthFlip()(
+            frames, blurred_frames, depths, masks, flows_f, flows_b
+        )
 
         # normalize to tensors
-        frame_tensors = self._to_tensors(frames) * 2.0 - 1.0
-        depth_tensors = self._to_tensors(depths)
-        mask_tensors = self._to_tensors(masks) * 255.0
+        frame_tensors = torch.stack(frames) / 255.0 * 2.0 - 1.0
+        blurred_frame_tensors = torch.stack(blurred_frames) / 255.0 * 2.0 - 1.0
+        depth_tensors = torch.stack(depths) / 255.0
+        mask_tensors = torch.stack(masks)
+
         if self.load_flow:
             flows_f = np.stack(flows_f, axis=-1)  # H W 2 T-1
             flows_b = np.stack(flows_b, axis=-1)
@@ -190,8 +179,9 @@ class TrainDataset(torch.utils.data.Dataset):
         if self.load_flow:
             return (
                 frame_tensors,
-                mask_tensors,
+                blurred_frame_tensors,
                 depth_tensors,
+                mask_tensors,
                 flows_f,
                 flows_b,
                 video_name,
@@ -199,146 +189,9 @@ class TrainDataset(torch.utils.data.Dataset):
         else:
             return (
                 frame_tensors,
-                mask_tensors,
+                blurred_frame_tensors,
                 depth_tensors,
-                "None",
-                "None",
-                video_name,
-            )
-
-
-class TestDataset(torch.utils.data.Dataset):
-    def __init__(self, args):
-        self.args = args
-        self.size = self.w, self.h = args["size"]
-
-        self.video_root = args["video_root"]
-        self.mask_root = args["mask_root"]
-        self.flow_root = args["flow_root"]
-        self.depth_root = args["depth_root"]
-
-        self.load_flow = args["load_flow"]
-        if self.load_flow:
-            assert os.path.exists(self.flow_root)
-
-        self.load_depth = args["load_depth"]
-        if self.load_depth:
-            assert os.path.exists(self.depth_root)
-
-        self.video_names = sorted(os.listdir(self.mask_root))
-
-        self.video_dict = {}
-        self.frame_dict = {}
-
-        for v in self.video_names:
-            frame_list = sorted(os.listdir(os.path.join(self.video_root, v)))
-            v_len = len(frame_list)
-            self.video_dict[v] = v_len
-            self.frame_dict[v] = frame_list
-
-        self._to_tensors = transforms.Compose(
-            [
-                Stack(),
-                ToTorchFormatTensor(),
-            ]
-        )
-        self.file_client = FileClient("disk")
-
-    def __len__(self):
-        return len(self.video_names)
-
-    def __getitem__(self, index):
-        video_name = self.video_names[index]
-        selected_index = list(range(self.video_dict[video_name]))
-
-        # read video frames
-        frames = []
-        masks = []
-        depths = []
-        flows_f, flows_b = [], []
-        for idx in selected_index:
-            frame_list = self.frame_dict[video_name]
-            frame_path = os.path.join(self.video_root, video_name, frame_list[idx])
-
-            img_bytes = self.file_client.get(frame_path, "input")
-            img = imfrombytes(img_bytes, float32=False)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = cv2.resize(img, self.size, interpolation=cv2.INTER_LINEAR)
-            img = Image.fromarray(img)
-
-            frames.append(img)
-
-            mask_path = os.path.join(
-                self.mask_root, video_name, str(idx).zfill(5) + ".png"
-            )
-            mask = Image.open(mask_path).resize(self.size, Image.NEAREST).convert("L")
-
-            # origin: 0 indicates missing. now: 1 indicates missing
-            mask = np.asarray(mask)
-            m = np.array(mask > 0).astype(np.uint8)
-
-            m = cv2.dilate(
-                m, cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3)), iterations=4
-            )
-            mask = Image.fromarray(m * 255)
-            masks.append(mask)
-
-            if self.load_depth:
-                depth_path = os.path.join(
-                    self.depth_root, video_name, frame_list[idx][:-4] + "_depth.png"
-                )
-                depth = (
-                    Image.open(depth_path).resize(self.size, Image.NEAREST).convert("L")
-                )
-                depths.append(depth)
-            # else:
-            #     depth_tensors = []
-            #     for idx in selected_index:
-            # TODO add DepthAnything compatibility
-
-            if len(frames) <= len(selected_index) - 1 and self.load_flow:
-                current_n = frame_list[idx][:-4]
-                next_n = frame_list[idx + 1][:-4]
-                flow_f_path = os.path.join(
-                    self.flow_root, video_name, f"{current_n}_{next_n}_f.flo"
-                )
-                flow_b_path = os.path.join(
-                    self.flow_root, video_name, f"{next_n}_{current_n}_b.flo"
-                )
-                flow_f = flowread(flow_f_path, quantize=False)
-                flow_b = flowread(flow_b_path, quantize=False)
-                flow_f = resize_flow(flow_f, self.h, self.w)
-                flow_b = resize_flow(flow_b, self.h, self.w)
-                flows_f.append(flow_f)
-                flows_b.append(flow_b)
-
-        # normalizate, to tensors
-        frames_PIL = [np.array(f).astype(np.uint8) for f in frames]
-        frame_tensors = self._to_tensors(frames) * 2.0 - 1.0
-        mask_tensors = self._to_tensors(masks)
-        depth_tensors = self._to_tensors(depths)
-
-        if self.load_flow:
-            flows_f = np.stack(flows_f, axis=-1)  # H W 2 T-1
-            flows_b = np.stack(flows_b, axis=-1)
-            flows_f = torch.from_numpy(flows_f).permute(3, 2, 0, 1).contiguous().float()
-            flows_b = torch.from_numpy(flows_b).permute(3, 2, 0, 1).contiguous().float()
-
-        if self.load_flow:
-            return (
-                frame_tensors,
                 mask_tensors,
-                depth_tensors,
-                flows_f,
-                flows_b,
-                video_name,
-                frames_PIL,
-            )
-        else:
-            return (
-                frame_tensors,
-                mask_tensors,
-                depth_tensors,
                 "None",
                 "None",
                 video_name,

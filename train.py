@@ -86,6 +86,8 @@ def main(config):
 
 if __name__ == "__main__":
 
+    torch.backends.cudnn.benchmark = True
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-c", "--config", default="configs/train_depthpainter.json", type=str

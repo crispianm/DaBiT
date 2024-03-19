@@ -235,9 +235,10 @@ class Trainer:
         while train_data is not None:
 
             self.iteration += 1
-            frames, depths, masks, flows_f, flows_b, _ = train_data
-            frames, depths, masks = (
+            frames, masked_frames, depths, masks, flows_f, flows_b, _ = train_data
+            frames, masked_frames, depths, masks = (
                 frames.to(device),
+                masked_frames.to(device),
                 depths.to(device).float(),
                 masks.to(device).float(),
             )
@@ -254,10 +255,10 @@ class Trainer:
             ].contiguous()
 
             # Get the masked frames, which are blurred at the nonzero region(s) of the mask
-            if self.config["dl_config"]["use_blur_masks"]:
-                masked_frames = get_blurred_masked_frames(frames, masks)
-            else:
-                masked_frames = frames * (1 - masks)
+            # if self.config["dl_config"]["use_blur_masks"]:
+            #     masked_frames = get_blurred_masked_frames(frames, masks)
+            # else:
+            #     masked_frames = frames * (1 - masks)
 
             masked_local_frames = masked_frames[
                 :,
@@ -322,52 +323,51 @@ class Trainer:
                 :,
                 :l_t,
             ]
-            # comp_local_frames = (
-            #     gt_local_frames * (1.0 - local_masks) + pred_local_frames * local_masks
-            # )
-            # comp_imgs = frames * (1.0 - masks) + pred_imgs * masks
 
             self.optimizer.zero_grad()
 
             # Student l1 loss
             hole_loss = self.l1_loss(pred_imgs * masks, frames * masks)
             hole_loss = (
-                hole_loss / torch.mean(masks) * self.config["trainer"]["hole_weight"]
+                hole_loss / torch.mean(masks) * self.config["losses"]["hole_weight"]
             )
             valid_loss = self.l1_loss(pred_imgs * (1 - masks), frames * (1 - masks))
             valid_loss = (
                 valid_loss
                 / torch.mean(1 - masks)
-                * self.config["trainer"]["valid_weight"]
+                * self.config["losses"]["valid_weight"]
             )
             self.add_summary(self.writer, "loss/hole_loss", hole_loss.item())
             self.add_summary(self.writer, "loss/valid_loss", valid_loss.item())
 
             # Knowledge Distillation Loss
-            teacher_outputs = self.teacher_model(
-                updated_frames
-                * (1 - updated_masks),  # Replace blur with zeros for teacher model
-                pred_flows_bi,
-                masks,
-                updated_masks,
-                l_t,
-            ).view(b, -1, c, h, w)
+            if self.config["losses"]["kd_weight"] > 0:
+                teacher_outputs = self.teacher_model(
+                    updated_frames
+                    * (1 - updated_masks),  # Replace blur with zeros for teacher model
+                    pred_flows_bi,
+                    masks,
+                    updated_masks,
+                    l_t,
+                ).view(b, -1, c, h, w)
 
-            kd_loss = (
-                self.l1_loss(pred_local_frames, teacher_outputs)
-                * self.config["trainer"]["kd_weight"]
-            )
-            self.add_summary(self.writer, "loss/kd_loss", kd_loss.item())
+                kd_loss = (
+                    self.l1_loss(pred_local_frames, teacher_outputs)
+                    * self.config["losses"]["kd_weight"]
+                )
+                self.add_summary(self.writer, "loss/kd_loss", kd_loss.item())
+            else:
+                kd_loss = 0
 
             total_loss = hole_loss + valid_loss + kd_loss
-            self.add_summary(self.writer, "loss/zz_total_loss", total_loss.item())
+            self.add_summary(self.writer, "loss/z_total_loss", total_loss.item())
             total_loss.backward()
             self.optimizer.step()
 
             self.update_learning_rate()
 
-            # write image to tensorboard
-            if self.iteration % 50 == 0:
+            # write images to tensorboard
+            if self.iteration % 250 == 0:
                 # img to cpu
                 t = 0
                 gt_local_frames_cpu = (
