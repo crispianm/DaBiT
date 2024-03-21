@@ -32,10 +32,10 @@ def main(config):
     # Dataset and Sampler
     train_args = config["trainer"]
     youtube_vos_train = TrainDataset(config["dl_config"], config["youtube-vos"])
-    bvidvc_train = TrainDataset(config["dl_config"], config["bvidvc"])
-    low_light_10_train = TrainDataset(config["dl_config"], config["low_light_10"])
+    # bvidvc_train = TrainDataset(config["dl_config"], config["bvidvc"])
+    # low_light_10_train = TrainDataset(config["dl_config"], config["low_light_10"])
     # valid_set = TestDataset(config)
-    datasets_train = [low_light_10_train, youtube_vos_train, bvidvc_train]
+    datasets_train = [youtube_vos_train]
     train_sampler = Sampler(datasets_train, iter=True)
 
     # DataLoaders

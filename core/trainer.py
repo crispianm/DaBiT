@@ -9,7 +9,7 @@ import torchvision
 from torch.utils.tensorboard import SummaryWriter
 
 from core.lr_scheduler import MultiStepRestartLR, CosineAnnealingRestartLR
-from core.loss import AdversarialLoss, PerceptualLoss, LPIPSLoss
+from core.loss import AdversarialLoss, PerceptualLoss, LPIPSLoss, CharbonnierLoss
 from core.dataset import *
 from core.utils import get_blurred_masked_frames
 
@@ -25,6 +25,7 @@ class Trainer:
     def __init__(self, config, prefetcher, model, teacher, start_epoch=0):
 
         self.l1_loss = nn.L1Loss()
+        self.charbonnier_loss = CharbonnierLoss()
 
         self.config = config
         self.model = model
@@ -361,7 +362,10 @@ class Trainer:
                 * self.config["losses"]["valid_weight"]
             )
             self.add_summary(
-                self.writer, "loss/deblur_loss", hole_loss.item() + valid_loss.item()
+                self.writer, "loss/hole_loss", hole_loss.item()
+            )
+            self.add_summary(
+                self.writer, "loss/valid_loss", valid_loss.item()
             )
 
             # # Knowledge Distillation Loss
@@ -386,7 +390,7 @@ class Trainer:
             # Super Resolution Loss
             if self.config["losses"]["sr_weight"] > 0:
                 sr_loss = (
-                    self.l1_loss(ori_pred_imgs, frames)
+                    self.charbonnier_loss(ori_pred_imgs, frames)
                     * self.config["losses"]["sr_weight"]
                 )
                 self.add_summary(self.writer, "loss/sr_loss", sr_loss.item())

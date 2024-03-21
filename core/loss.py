@@ -3,6 +3,15 @@ import torch.nn as nn
 import lpips
 from model.vgg_arch import VGGFeatureExtractor
 
+class CharbonnierLoss(nn.Module):
+    def __init__(self, epsilon=0.001):
+        super(CharbonnierLoss, self).__init__()
+        self.epsilon = epsilon
+
+    def forward(self, output, gt):
+        return torch.mean(torch.sqrt((output - gt) ** 2 + self.epsilon**2))
+
+
 class PerceptualLoss(nn.Module):
     """Perceptual loss with commonly used style loss.
 
