@@ -243,12 +243,26 @@ class Trainer:
                 masks.to(device).float(),
             )
 
+            # frames: [b, t, c, ori_h, ori_w]
+            # masked_frames: [b, t, c, h, w]
+            # masks: [b, t, 1, h, w]
+            # depths: [b, t, 1, h, w]
+
             l_t = self.num_local_frames
-            b, t, c, h, w = frames.size()
-            gt_local_frames = frames[
+            b, t, c, ori_h, ori_w = frames.size()
+            b, t, c, h, w = masked_frames.size()
+
+            resized_frames = torch.stack(
+                [
+                    transforms.Resize(size=(h, w), antialias=None)(batch)
+                    for batch in frames
+                ]
+            )
+            gt_local_frames = resized_frames[
                 :,
                 :l_t,
             ]
+
             local_masks = masks[
                 :,
                 :l_t,
@@ -307,14 +321,20 @@ class Trainer:
                 :l_t,
             ] = prop_local_frames
 
-            # ---- feature propagation + Transformer ----
-            pred_imgs = self.model(
+            # ---- Feature Propagation + Transformer + Super Resolution ----
+            ori_pred_imgs = self.model(
                 updated_frames,
                 completed_depths,
                 pred_flows_bi,
                 masks,
                 updated_masks,
                 l_t,
+            )
+            pred_imgs = torch.stack(
+                [
+                    transforms.Resize(size=(h, w), antialias=None)(batch)
+                    for batch in ori_pred_imgs
+                ]
             )
             pred_imgs = pred_imgs.view(b, -1, c, h, w)
 
@@ -324,42 +344,56 @@ class Trainer:
                 :l_t,
             ]
 
+            # ---- Loss Calculation ----
             self.optimizer.zero_grad()
 
             # Student l1 loss
-            hole_loss = self.l1_loss(pred_imgs * masks, frames * masks)
+            hole_loss = self.l1_loss(pred_imgs * masks, resized_frames * masks)
             hole_loss = (
                 hole_loss / torch.mean(masks) * self.config["losses"]["hole_weight"]
             )
-            valid_loss = self.l1_loss(pred_imgs * (1 - masks), frames * (1 - masks))
+            valid_loss = self.l1_loss(
+                pred_imgs * (1 - masks), resized_frames * (1 - masks)
+            )
             valid_loss = (
                 valid_loss
                 / torch.mean(1 - masks)
                 * self.config["losses"]["valid_weight"]
             )
-            self.add_summary(self.writer, "loss/hole_loss", hole_loss.item())
-            self.add_summary(self.writer, "loss/valid_loss", valid_loss.item())
+            self.add_summary(
+                self.writer, "loss/deblur_loss", hole_loss.item() + valid_loss.item()
+            )
 
-            # Knowledge Distillation Loss
-            if self.config["losses"]["kd_weight"] > 0:
-                teacher_outputs = self.teacher_model(
-                    updated_frames
-                    * (1 - updated_masks),  # Replace blur with zeros for teacher model
-                    pred_flows_bi,
-                    masks,
-                    updated_masks,
-                    l_t,
-                ).view(b, -1, c, h, w)
+            # # Knowledge Distillation Loss
+            # if self.config["losses"]["kd_weight"] > 0:
+            #     teacher_outputs = self.teacher_model(
+            #         updated_frames
+            #         * (1 - updated_masks),  # Replace blur with zeros for teacher model
+            #         pred_flows_bi,
+            #         masks,
+            #         updated_masks,
+            #         l_t,
+            #     ).view(b, -1, c, h, w)
 
-                kd_loss = (
-                    self.l1_loss(pred_local_frames, teacher_outputs)
-                    * self.config["losses"]["kd_weight"]
+            #     kd_loss = (
+            #         self.l1_loss(pred_local_frames, teacher_outputs)
+            #         * self.config["losses"]["kd_weight"]
+            #     )
+            #     self.add_summary(self.writer, "loss/kd_loss", kd_loss.item())
+            # else:
+            #     kd_loss = 0
+
+            # Super Resolution Loss
+            if self.config["losses"]["sr_weight"] > 0:
+                sr_loss = (
+                    self.l1_loss(ori_pred_imgs, frames)
+                    * self.config["losses"]["sr_weight"]
                 )
-                self.add_summary(self.writer, "loss/kd_loss", kd_loss.item())
+                self.add_summary(self.writer, "loss/sr_loss", sr_loss.item())
             else:
-                kd_loss = 0
+                sr_loss = 0
 
-            total_loss = hole_loss + valid_loss + kd_loss
+            total_loss = hole_loss + valid_loss + sr_loss
             self.add_summary(self.writer, "loss/z_total_loss", total_loss.item())
             total_loss.backward()
             self.optimizer.step()

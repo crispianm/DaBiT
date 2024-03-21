@@ -546,10 +546,9 @@ def blur_with_depth(
     blur_mask = torch.zeros(depth_map.shape)
 
     min_depth = torch.min(depth_map)
-    assert min_depth == 0, "Depth map contains negative values"
     max_depth = torch.max(depth_map)
-    assert max_depth == 255, "Depth map contains values greater than 255"
     step = (max_depth - min_depth) / num_layers
+    assert step > 1, "Depth map or img should be normalized to [0, 255]"
     layers = torch.arange(min_depth, max_depth, step)
 
     for depth_value in layers:

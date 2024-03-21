@@ -347,10 +347,10 @@ class ProPainter(BaseNetwork):
         if model_path is not None:
             ckpt = torch.load(model_path, map_location="cpu")
             self.load_state_dict(ckpt, strict=True)
-            print("Pretrained ProPainter has loaded.")
+        #     print("Pretrained ProPainter has loaded.")
 
-        # print network parameter number
-        self.print_network()
+        # # print network parameter number
+        # self.print_network()
 
     def img_propagation(
         self, masked_frames, completed_flows, masks, interpolation="nearest"

@@ -28,7 +28,7 @@ def forward_interpolate(flow):
     dx, dy = flow[0], flow[1]
 
     ht, wd = dx.shape
-    x0, y0 = np.meshgrid(np.arange(wd), np.arange(ht))
+    x0, y0 = np.meshgrid(np.arange(wd), np.arange(ht), indexing='ij')
 
     x1 = x0 + dx
     y1 = y0 + dy

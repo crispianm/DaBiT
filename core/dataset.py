@@ -25,7 +25,8 @@ class TrainDataset(torch.utils.data.Dataset):
 
         self.num_local_frames = args["num_local_frames"]
         self.num_ref_frames = args["num_ref_frames"]
-        self.size = self.w, self.h = (args["w"], args["h"])
+        self.ori_size = self.ori_w, self.ori_h = (args["w"], args["h"])
+        self.w, self.h = self.ori_w // 2, self.ori_h // 2
 
         self.load_flow = args["load_flow"]
         if self.load_flow:
@@ -94,23 +95,25 @@ class TrainDataset(torch.utils.data.Dataset):
             frame_list = self.frame_dict[video_name]
             img_path = os.path.join(self.video_root, video_name, frame_list[idx])
             img = io.read_image(img_path)
-
+            img = transforms.Resize(size=(self.ori_h, self.ori_w), antialias=None)(img)
             frames.append(img)
+            img = transforms.Resize(size=(self.h, self.w), antialias=None)(img)
+            # print(img.shape)
 
             if self.load_depth:
                 depth_path = os.path.join(
                     self.depth_root, video_name, frame_list[idx][:-4] + "_depth.png"
                 )
-                depth = io.read_image(depth_path)[0]
+                depth = io.read_image(depth_path)[0].unsqueeze(0)
+                depth = transforms.Resize(size=(self.h, self.w), antialias=None)(depth)
                 depths.append(depth)
             else:
                 raise ValueError("Depth not loaded")
 
             if self.args["use_blur_masks"]:
-
                 blurred_image, blur_mask = blur_with_depth(
                     img,
-                    depth,
+                    depth[0],
                     0,
                     max_blur,
                     focal_point,
@@ -164,8 +167,8 @@ class TrainDataset(torch.utils.data.Dataset):
         )
 
         # normalize to tensors
-        frame_tensors = torch.stack(frames) / 255.0 * 2.0 - 1.0
-        blurred_frame_tensors = torch.stack(blurred_frames) / 255.0 * 2.0 - 1.0
+        frame_tensors = (torch.stack(frames) / 255.0 * 2.0) - 1.0
+        blurred_frame_tensors = (torch.stack(blurred_frames) / 255.0 * 2.0) - 1.0
         depth_tensors = torch.stack(depths) / 255.0
         mask_tensors = torch.stack(masks)
 
