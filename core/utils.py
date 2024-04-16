@@ -460,7 +460,7 @@ def get_random_focus_depths():
     focal_point = random.uniform(0, 255)
 
     # Add focus pull
-    step = random.uniform(2, 10)
+    step = random.randint(1, 5)
 
     return window, step, focal_point
 
@@ -545,7 +545,7 @@ def blur_with_depth(
     out = torch.zeros(img.shape)
     blur_mask = torch.zeros(depth_map.shape)
 
-    min_depth = torch.min(depth_map)
+    min_depth = 0
     max_depth = torch.max(depth_map)
     step = (max_depth - min_depth) / num_layers
     assert step > 1, "Depth map or img should be normalized to [0, 255]"

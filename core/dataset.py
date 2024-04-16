@@ -77,7 +77,7 @@ class TrainDataset(torch.utils.data.Dataset):
 
         if self.args["use_blur_masks"]:
             window, step, focal_point = get_random_focus_depths()
-            max_blur = random.randint(3, 13)
+            max_blur = random.randint(3, 11)
 
         # create sample index
         selected_index = self._sample_index(
@@ -114,7 +114,7 @@ class TrainDataset(torch.utils.data.Dataset):
                 blurred_image, blur_mask = blur_with_depth(
                     img,
                     depth[0],
-                    0,
+                    1,
                     max_blur,
                     focal_point,
                     100,
@@ -124,7 +124,7 @@ class TrainDataset(torch.utils.data.Dataset):
                 focal_point += step
 
                 blurred_frames.append(blurred_image)
-                masks.append(blur_mask / torch.max(blur_mask))
+                masks.append(blur_mask)
 
             if len(frames) <= self.num_local_frames - 1 and self.load_flow:
                 current_n = frame_list[idx][:-4]
@@ -170,7 +170,10 @@ class TrainDataset(torch.utils.data.Dataset):
         frame_tensors = (torch.stack(frames) / 255.0 * 2.0) - 1.0
         blurred_frame_tensors = (torch.stack(blurred_frames) / 255.0 * 2.0) - 1.0
         depth_tensors = torch.stack(depths) / 255.0
-        mask_tensors = torch.stack(masks)
+        masks = torch.stack(masks)
+        mask_tensors = (masks - torch.min(masks)) * (
+            1.0 / (torch.max(masks) - torch.min(masks))
+        )
 
         if self.load_flow:
             flows_f = np.stack(flows_f, axis=-1)  # H W 2 T-1
@@ -199,6 +202,34 @@ class TrainDataset(torch.utils.data.Dataset):
                 "None",
                 video_name,
             )
+
+
+class TestDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset="T:/ProPainter Datasets/davis/blur_tests"):
+
+        self.dataset = dataset
+
+        self.ori_size = self.ori_w, self.ori_h = (640, 360)
+        self.w, self.h = self.ori_w // 2, self.ori_h // 2
+
+
+def __getitem__(self, index):
+
+    video_name = self.dataset[index]
+
+    frame_list = sorted(os.listdir(os.path.join(self.video_root, video_name)))
+    frame_list = [f for f in frame_list if f.endswith(".jpg")]
+
+    frames = []
+    for f in frame_list:
+        img_path = os.path.join(self.video_root, video_name, f)
+        img = io.read_image(img_path)
+        img = transforms.Resize(size=(self.ori_h, self.ori_w), antialias=None)(img)
+        frames.append(img)
+
+    frame_tensors = (torch.stack(frames) / 255.0 * 2.0) - 1.0
+
+    return frame_tensors, video_name
 
 
 class Sampler(torch.utils.data.Dataset):

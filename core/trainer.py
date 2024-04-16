@@ -11,11 +11,9 @@ from torch.utils.tensorboard import SummaryWriter
 from core.lr_scheduler import MultiStepRestartLR, CosineAnnealingRestartLR
 from core.loss import AdversarialLoss, PerceptualLoss, LPIPSLoss, CharbonnierLoss
 from core.dataset import *
-from core.utils import get_blurred_masked_frames
 
 from model.modules.flow_comp_raft import RAFT_bi, FlowLoss, EdgeLoss
 from model.recurrent_flow_completion import RecurrentFlowCompleteNet
-from model.depth_completion import DepthCompletion
 
 
 from RAFT.utils.flow_viz_pt import flow_to_image
@@ -60,18 +58,6 @@ class Trainer:
         self.summary = {}
         self.log_dir = os.path.join(config["out_dir"], "logs")
         self.writer = SummaryWriter(self.log_dir)
-
-        # # Add depth completion
-        # # TODO: check this works properly
-        # self.depth_completion_model = DepthCompletion().to(self.device)
-        # data = torch.load("weights/depth_completion.pth", map_location=self.device)
-        # self.depth_completion_model.load_state_dict(data["netG"])
-        # print(
-        #     "Loading DepthCompletion Network from: {}".format(
-        #         "weights/depth_completion.pth"
-        #     )
-        # )
-        # self.depth_completion_model.eval()
 
     def setup_optimizers(self):
         """Set up optimizers."""
@@ -236,22 +222,22 @@ class Trainer:
         while train_data is not None:
 
             self.iteration += 1
-            frames, masked_frames, depths, masks, flows_f, flows_b, _ = train_data
-            frames, masked_frames, depths, masks = (
+            frames, blurry_frames, depths, blur_maps, flows_f, flows_b, _ = train_data
+            frames, blurry_frames, depths, blur_maps = (
                 frames.to(device),
-                masked_frames.to(device),
+                blurry_frames.to(device),
                 depths.to(device).float(),
-                masks.to(device).float(),
+                blur_maps.to(device).float(),
             )
 
             # frames: [b, t, c, ori_h, ori_w]
-            # masked_frames: [b, t, c, h, w]
+            # blurry_frames: [b, t, c, h, w]
             # masks: [b, t, 1, h, w]
             # depths: [b, t, 1, h, w]
 
             l_t = self.num_local_frames
             b, t, c, ori_h, ori_w = frames.size()
-            b, t, c, h, w = masked_frames.size()
+            b, t, c, h, w = blurry_frames.size()
 
             resized_frames = torch.stack(
                 [
@@ -263,19 +249,19 @@ class Trainer:
                 :,
                 :l_t,
             ]
-
-            local_masks = masks[
+            binary_masks = (blur_maps > 0.1).float()
+            local_masks = binary_masks[
                 :,
                 :l_t,
             ].contiguous()
 
             # Get the masked frames, which are blurred at the nonzero region(s) of the mask
-            # if self.config["dl_config"]["use_blur_masks"]:
-            #     masked_frames = get_blurred_masked_frames(frames, masks)
+            # if self.config["dl_config"]["use_blur_maps"]:
+            #     blurry_frames = get_blurred_blurry_frames(frames, masks)
             # else:
-            #     masked_frames = frames * (1 - masks)
+            #     blurry_frames = frames * (1 - masks)
 
-            masked_local_frames = masked_frames[
+            masked_local_frames = blurry_frames[
                 :,
                 :l_t,
             ]
@@ -307,12 +293,12 @@ class Trainer:
                 local_masks,
                 interpolation=self.interp_mode,
             )
-            updated_masks = masks.clone()
-            updated_masks[
+            updated_binary_masks = binary_masks.clone()
+            updated_binary_masks[
                 :,
                 :l_t,
             ] = updated_local_masks.view(b, l_t, 1, h, w)
-            updated_frames = masked_frames.clone()
+            updated_frames = blurry_frames.clone()
             prop_local_frames = (
                 gt_local_frames * (1 - local_masks)
                 + prop_imgs.view(b, l_t, 3, h, w) * local_masks
@@ -327,8 +313,8 @@ class Trainer:
                 updated_frames,
                 completed_depths,
                 pred_flows_bi,
-                masks,
-                updated_masks,
+                blur_maps,
+                updated_binary_masks,
                 l_t,
             )
             pred_imgs = torch.stack(
@@ -349,33 +335,33 @@ class Trainer:
             self.optimizer.zero_grad()
 
             # Student l1 loss
-            hole_loss = self.l1_loss(pred_imgs * masks, resized_frames * masks)
+            hole_loss = self.l1_loss(
+                pred_imgs * binary_masks, resized_frames * binary_masks
+            )
             hole_loss = (
-                hole_loss / torch.mean(masks) * self.config["losses"]["hole_weight"]
+                hole_loss
+                / torch.mean(binary_masks)
+                * self.config["losses"]["hole_weight"]
             )
             valid_loss = self.l1_loss(
-                pred_imgs * (1 - masks), resized_frames * (1 - masks)
+                pred_imgs * (1 - binary_masks), resized_frames * (1 - binary_masks)
             )
             valid_loss = (
                 valid_loss
-                / torch.mean(1 - masks)
+                / torch.mean(1 - binary_masks)
                 * self.config["losses"]["valid_weight"]
             )
-            self.add_summary(
-                self.writer, "loss/hole_loss", hole_loss.item()
-            )
-            self.add_summary(
-                self.writer, "loss/valid_loss", valid_loss.item()
-            )
+            self.add_summary(self.writer, "loss/hole_loss", hole_loss.item())
+            self.add_summary(self.writer, "loss/valid_loss", valid_loss.item())
 
             # # Knowledge Distillation Loss
             # if self.config["losses"]["kd_weight"] > 0:
             #     teacher_outputs = self.teacher_model(
             #         updated_frames
-            #         * (1 - updated_masks),  # Replace blur with zeros for teacher model
+            #         * (1 - updated_binary_masks),  # Replace blur with zeros for teacher model
             #         pred_flows_bi,
             #         masks,
-            #         updated_masks,
+            #         updated_binary_masks,
             #         l_t,
             #     ).view(b, -1, c, h, w)
 
@@ -407,7 +393,6 @@ class Trainer:
             # write images to tensorboard
             if self.iteration % 250 == 0:
                 # img to cpu
-                t = 0
                 gt_local_frames_cpu = (
                     (gt_local_frames.view(b, -1, 3, h, w) + 1) / 2.0
                 ).cpu()
@@ -422,10 +407,10 @@ class Trainer:
                 ).cpu()
                 img_results = torch.cat(
                     [
-                        masked_local_frames[0][t],
-                        prop_local_frames_cpu[0][t],
-                        pred_local_frames_cpu[0][t],
-                        gt_local_frames_cpu[0][t],
+                        masked_local_frames[0][0],
+                        prop_local_frames_cpu[0][0],
+                        pred_local_frames_cpu[0][0],
+                        gt_local_frames_cpu[0][0],
                     ],
                     1,
                 )
@@ -434,53 +419,67 @@ class Trainer:
                 )
                 if self.writer is not None:
                     self.writer.add_image(
-                        f"img/img:inp-gt-res-{t}", img_results, self.iteration
+                        f"img/img:input-prop-out-gt (0)", img_results, self.iteration
                     )
 
-                t = 5
-                if masked_local_frames.shape[1] > 5:
-                    img_results = torch.cat(
-                        [
-                            masked_local_frames[0][t],
-                            prop_local_frames_cpu[0][t],
-                            pred_local_frames_cpu[0][t],
-                            gt_local_frames_cpu[0][t],
-                        ],
-                        1,
+                img_results = torch.cat(
+                    [
+                        masked_local_frames[0][-1],
+                        prop_local_frames_cpu[0][-1],
+                        pred_local_frames_cpu[0][-1],
+                        gt_local_frames_cpu[0][-1],
+                    ],
+                    1,
+                )
+                img_results = torchvision.utils.make_grid(
+                    img_results, nrow=1, normalize=True
+                )
+                if self.writer is not None:
+                    self.writer.add_image(
+                        f"img/img:input-prop-out-gt (-1)", img_results, self.iteration
                     )
-                    img_results = torchvision.utils.make_grid(
-                        img_results, nrow=1, normalize=True
-                    )
-                    if self.writer is not None:
-                        self.writer.add_image(
-                            f"img/img:inp-gt-res-{t}", img_results, self.iteration
-                        )
 
-                    # flow to cpu
-                    gt_flows_forward_cpu = flow_to_image(gt_flows_bi[0][0]).cpu()
-                    masked_flows_forward_cpu = (
-                        gt_flows_forward_cpu[0] * (1 - local_masks[0][0].cpu())
-                    ).to(gt_flows_forward_cpu)
-                    pred_flows_forward_cpu = flow_to_image(pred_flows_bi[0][0]).cpu()
+                # flow to cpu
+                gt_flows_forward_cpu = flow_to_image(gt_flows_bi[0][0]).cpu()
+                masked_flows_forward_cpu = (
+                    gt_flows_forward_cpu[0] * (1 - local_masks[0][0].cpu())
+                    + local_masks[0][0].cpu()
+                ).to(gt_flows_forward_cpu)
+                pred_flows_forward_cpu = flow_to_image(pred_flows_bi[0][0]).cpu()
 
-                    flow_results = torch.cat(
-                        [
-                            gt_flows_forward_cpu[0],
-                            masked_flows_forward_cpu,
-                            pred_flows_forward_cpu[0],
-                        ],
-                        1,
+                flow_results = torch.cat(
+                    [
+                        masked_flows_forward_cpu,
+                        pred_flows_forward_cpu[0],
+                        gt_flows_forward_cpu[0],
+                    ],
+                    1,
+                )
+                if self.writer is not None:
+                    self.writer.add_image(
+                        "img/flow:masked-pred-gt", flow_results, self.iteration
                     )
-                    if self.writer is not None:
-                        self.writer.add_image(
-                            "img/flow:gt-pred", flow_results, self.iteration
-                        )
+
+                # depth, blur, binary mask and updated binary mask to cpu
+                binary_results = torch.cat(
+                    [
+                        blur_maps[0][0].cpu(),
+                        binary_masks[0][0].cpu(),
+                        updated_binary_masks[0][0].cpu(),
+                        depths[0][0].cpu(),
+                    ],
+                    1,
+                )
+                if self.writer is not None:
+                    self.writer.add_image(
+                        "img/bin:blur-mask-up_mask-depth",
+                        binary_results,
+                        self.iteration,
+                    )
 
             # console logs
             pbar.update(1)
-            pbar.set_description(
-                (f"hole: {hole_loss.item():.3f}; " f"valid: {valid_loss.item():.3f}")
-            )
+            pbar.set_description((f"Loss: {total_loss.item():.3f}"))
 
             # saving models
             if self.iteration % self.train_args["save_freq"] == 0:

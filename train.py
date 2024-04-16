@@ -10,7 +10,6 @@ import core
 import core.trainer
 from core.dataset import *
 from torch.utils.data import DataLoader
-from model.propainter import ProPainter
 from model.depthpainter import DepthPainter
 from core.prefetch_dataloader import PrefetchDataLoader, CPUPrefetcher
 
@@ -32,10 +31,10 @@ def main(config):
     # Dataset and Sampler
     train_args = config["trainer"]
     youtube_vos_train = TrainDataset(config["dl_config"], config["youtube-vos"])
-    # bvidvc_train = TrainDataset(config["dl_config"], config["bvidvc"])
+    bvidvc_train = TrainDataset(config["dl_config"], config["bvidvc"])
     # low_light_10_train = TrainDataset(config["dl_config"], config["low_light_10"])
     # valid_set = TestDataset(config)
-    datasets_train = [youtube_vos_train]
+    datasets_train = [youtube_vos_train, bvidvc_train]
     train_sampler = Sampler(datasets_train, iter=True)
 
     # DataLoaders
@@ -73,12 +72,13 @@ def main(config):
     model = DepthPainter(config).to(config["device"])
     print(config["net"], "network created")
 
-    teacher = ProPainter()
-    teacher.load_state_dict(torch.load("./weights/ProPainter.pth"))
-    for p in teacher.parameters():
-        p.requires_grad = False
-    teacher.to(config["device"])
-    teacher.eval()
+    # teacher = ProPainter()
+    # teacher.load_state_dict(torch.load("./weights/ProPainter.pth"))
+    # for p in teacher.parameters():
+    #     p.requires_grad = False
+    # teacher.to(config["device"])
+    # teacher.eval()
+    teacher = None
 
     trainer = core.trainer.Trainer(config, prefetcher, model, teacher)
     trainer.train()

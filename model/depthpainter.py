@@ -1,6 +1,3 @@
-""" Towards An End-to-End Framework for Video Inpainting
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,17 +7,18 @@ from einops import rearrange
 
 from model.modules.base_module import BaseNetwork
 from model.modules.sparse_transformer import (
-    TemporalSparseTransformerBlock,
+    TemporalSparseTransformer,
     SoftSplit,
     SoftComp,
 )
+
 from model.modules.spectral_norm import spectral_norm as _spectral_norm
 from model.modules.flow_loss_utils import flow_warp
 from model.modules.deformconv import ModulatedDeformConv2d
 from basicvsr.mmedit.models.backbones.sr_backbones.basicvsr_net import (
     ResidualBlocksWithInputConv,
 )
-from basicvsr.mmedit.models.common import PixelShufflePack, flow_warp
+from basicvsr.mmedit.models.common import PixelShufflePack
 from mmcv.ops import ModulatedDeformConv2d, modulated_deform_conv2d
 
 from .misc import constant_init
@@ -166,7 +164,7 @@ class BidirectionalPropagation(nn.Module):
                 else:
                     flow_prop = flows_for_prop[:, flow_idx[i], :, :, :]
                     flow_check = flows_for_check[:, flow_idx[i], :, :, :]
-                    flow_vaild_mask = fbConsistencyCheck(flow_prop, flow_check)
+                    flow_valid_mask = fbConsistencyCheck(flow_prop, flow_check)
                     feat_warped = flow_warp(
                         feat_prop, flow_prop.permute(0, 2, 3, 1), interpolation
                     )
@@ -177,7 +175,7 @@ class BidirectionalPropagation(nn.Module):
                                 feat_current,
                                 feat_warped,
                                 flow_prop,
-                                flow_vaild_mask,
+                                flow_valid_mask,
                                 mask_current,
                             ],
                             dim=1,
@@ -193,7 +191,7 @@ class BidirectionalPropagation(nn.Module):
                         mask_prop_valid = self.binary_mask(mask_prop_valid)
 
                         union_vaild_mask = self.binary_mask(
-                            mask_current * flow_vaild_mask * (1 - mask_prop_valid)
+                            mask_current * flow_valid_mask * (1 - mask_prop_valid)
                         )
                         feat_prop = (
                             union_vaild_mask * feat_warped
@@ -202,7 +200,7 @@ class BidirectionalPropagation(nn.Module):
                         # update mask
                         mask_prop = self.binary_mask(
                             mask_current
-                            * (1 - (flow_vaild_mask * (1 - mask_prop_valid)))
+                            * (1 - (flow_valid_mask * (1 - mask_prop_valid)))
                         )
 
                 # refine
@@ -302,7 +300,7 @@ class deconv(nn.Module):
 
 
 class DepthPainter(BaseNetwork):
-    def __init__(self, init_weights=False, model_path=None):
+    def __init__(self, config, init_weights=False, model_path=None):
         super(DepthPainter, self).__init__()
         channel = 128
         hidden = 512
@@ -310,6 +308,7 @@ class DepthPainter(BaseNetwork):
         self.num_blocks = 7
         self.cpu_cache_length = 100
         self.cpu_cache = False
+        self.device = config["device"]
 
         # encoder
         self.encoder = Encoder()
@@ -378,7 +377,7 @@ class DepthPainter(BaseNetwork):
         num_heads = 4
         window_size = (5, 9)
         pool_size = (4, 4)
-        self.transformers = TemporalSparseTransformerBlock(
+        self.transformers = TemporalSparseTransformer(
             dim=hidden,
             n_head=num_heads,
             window_size=window_size,
@@ -386,113 +385,25 @@ class DepthPainter(BaseNetwork):
             depths=depths,
             t2t_params=t2t_params,
         )
-        # if init_weights:
-        #     self.init_weights()
+
 
         if model_path is not None:
             ckpt = torch.load(model_path, map_location="cpu")
             self.load_state_dict(ckpt, strict=True)
-            print("Pretrained ProPainter has loaded.")
+            print("Pretrained DepthPainter has loaded.")
 
         # print network parameter number
         self.print_network()
 
     def img_propagation(
-        self, masked_frames, completed_flows, masks, interpolation="nearest"
+        self, blurry_frames, flows, masks, interpolation="nearest"
     ):
 
         _, _, prop_frames, updated_masks = self.img_prop_module(
-            masked_frames, completed_flows[0], completed_flows[1], masks, interpolation
+            blurry_frames, flows[0], flows[1], masks, interpolation
         )
 
         return prop_frames, updated_masks
-
-    # def propagate(self, feats, flows, module_name):
-    #     """Propagate the latent features throughout the sequence.
-
-    #     Args:
-    #         feats dict(list[tensor]): Features from previous branches. Each
-    #             component is a list of tensors with shape (n, c, h, w).
-    #         flows (tensor): Optical flows with shape (n, t - 1, 2, h, w).
-    #         module_name (str): The name of the propgation branches. Can either
-    #             be 'backward_1', 'forward_1', 'backward_2', 'forward_2'.
-
-    #     Return:
-    #         dict(list[tensor]): A dictionary containing all the propagated
-    #             features. Each key in the dictionary corresponds to a
-    #             propagation branch, which is represented by a list of tensors.
-    #     """
-
-    #     n, t, _, h, w = flows.size()
-
-    #     frame_idx = range(0, t + 1)
-    #     flow_idx = range(-1, t)
-    #     mapping_idx = list(range(0, len(feats["spatial"])))
-    #     mapping_idx += mapping_idx[::-1]
-
-    #     if "backward" in module_name:
-    #         frame_idx = frame_idx[::-1]
-    #         flow_idx = frame_idx
-
-    #     feat_prop = flows.new_zeros(n, self.mid_channels, h, w)
-    #     for i, idx in enumerate(frame_idx):
-    #         print(f"feat prop on frame {i}")
-    #         feat_current = feats["spatial"][mapping_idx[idx]]
-    #         if self.cpu_cache:
-    #             feat_current = feat_current.cuda()
-    #             feat_prop = feat_prop.cuda()
-    #         # second-order deformable alignment
-    #         if i > 0:
-    #             flow_n1 = flows[:, flow_idx[i], :, :, :]
-    #             if self.cpu_cache:
-    #                 flow_n1 = flow_n1.cuda()
-    #             cond_n1 = flow_warp(feat_prop, flow_n1.permute(0, 2, 3, 1))
-
-    #             # initialize second-order features
-    #             feat_n2 = torch.zeros_like(feat_prop)
-    #             flow_n2 = torch.zeros_like(flow_n1)
-    #             cond_n2 = torch.zeros_like(cond_n1)
-
-    #             if i > 1:  # second-order features
-    #                 feat_n2 = feats[module_name][-2]
-    #                 if self.cpu_cache:
-    #                     feat_n2 = feat_n2.cuda()
-
-    #                 flow_n2 = flows[:, flow_idx[i - 1], :, :, :]
-    #                 if self.cpu_cache:
-    #                     flow_n2 = flow_n2.cuda()
-
-    #                 flow_n2 = flow_n1 + flow_warp(flow_n2, flow_n1.permute(0, 2, 3, 1))
-    #                 cond_n2 = flow_warp(feat_n2, flow_n2.permute(0, 2, 3, 1))
-
-    #             # flow-guided deformable convolution
-    #             cond = torch.cat([cond_n1, feat_current, cond_n2], dim=1)
-    #             feat_prop = torch.cat([feat_prop, feat_n2], dim=1)
-    #             feat_prop = self.deform_align[module_name](
-    #                 feat_prop, cond, flow_n1, flow_n2
-    #             )
-
-    #         # concatenate and residual blocks
-    #         feat = (
-    #             [feat_current]
-    #             + [feats[k][idx] for k in feats if k not in ["spatial", module_name]]
-    #             + [feat_prop]
-    #         )
-    #         if self.cpu_cache:
-    #             feat = [f.cuda() for f in feat]
-
-    #         feat = torch.cat(feat, dim=1)
-    #         feat_prop = feat_prop + self.backbone[module_name](feat)
-    #         feats[module_name].append(feat_prop)
-
-    #         if self.cpu_cache:
-    #             feats[module_name][-1] = feats[module_name][-1].cpu()
-    #             torch.cuda.empty_cache()
-
-    #     if "backward" in module_name:
-    #         feats[module_name] = feats[module_name][::-1]
-
-    #     return feats
 
     def upsample(self, lqs, feats):
         """Compute the output image given the features.
@@ -532,32 +443,32 @@ class DepthPainter(BaseNetwork):
 
     def forward(
         self,
-        masked_frames,
-        completed_depths,
-        completed_flows,
-        masks_in,
-        masks_updated,
+        blurry_frames,
+        depths,
+        flows,
+        blur_maps,
+        bin_masks,
         num_local_frames,
         interpolation="bilinear",
         t_dilation=2,
     ):
         """
         Args:
-            masks_in: original mask
-            masks_updated: updated mask after image propagation
+            blur_maps: blur masks
+            bin_masks: updated binary masks after image propagation
         """
 
         l_t = num_local_frames
-        b, t, _, h_in, w_in = masked_frames.size()
+        b, t, _, h_in, w_in = blurry_frames.size()
 
         # extracting features
         enc_feat = self.encoder(
             torch.cat(
                 [
-                    masked_frames.view(b * t, 3, h_in, w_in),
-                    masks_in.view(b * t, 1, h_in, w_in),
-                    masks_updated.view(b * t, 1, h_in, w_in),
-                    completed_depths.view(b * t, 1, h_in, w_in),
+                    blurry_frames.view(b * t, 3, h_in, w_in),
+                    blur_maps.view(b * t, 1, h_in, w_in),
+                    bin_masks.view(b * t, 1, h_in, w_in),
+                    depths.view(b * t, 1, h_in, w_in),
                 ],
                 dim=1,
             )
@@ -570,8 +481,8 @@ class DepthPainter(BaseNetwork):
         # flow and mask
         ds_flows_f = (
             F.interpolate(
-                completed_flows[0].view(-1, 2, h_in, w_in),
-                scale_factor=1 / 4,
+                flows[0].view(-1, 2, h_in, w_in),
+                scale_factor=0.25,
                 mode="bilinear",
                 align_corners=False,
             ).view(b, l_t - 1, 2, h, w)
@@ -579,35 +490,36 @@ class DepthPainter(BaseNetwork):
         )
         ds_flows_b = (
             F.interpolate(
-                completed_flows[1].view(-1, 2, h_in, w_in),
-                scale_factor=1 / 4,
+                flows[1].view(-1, 2, h_in, w_in),
+                scale_factor=0.25,
                 mode="bilinear",
                 align_corners=False,
             ).view(b, l_t - 1, 2, h, w)
             / 4.0
         )
-        ds_mask_in = F.interpolate(
-            masks_in.reshape(-1, 1, h_in, w_in), scale_factor=1 / 4, mode="nearest"
+        ds_blur_maps = F.interpolate(
+            blur_maps.reshape(-1, 1, h_in, w_in), scale_factor=0.25, mode="nearest"
         ).view(b, t, 1, h, w)
-        ds_mask_in_local = ds_mask_in[:, :l_t]
-        ds_mask_updated_local = F.interpolate(
-            masks_updated[:, :l_t].reshape(-1, 1, h_in, w_in),
-            scale_factor=1 / 4,
+        ds_blur_maps_local = ds_blur_maps[:, :l_t]
+
+        ds_bin_masks_local = F.interpolate(
+            bin_masks[:, :l_t].reshape(-1, 1, h_in, w_in),
+            scale_factor=0.25,
             mode="nearest",
         ).view(b, l_t, 1, h, w)
 
         if self.training:
-            mask_pool_l = self.max_pool(ds_mask_in.view(-1, 1, h, w))
+            mask_pool_l = self.max_pool(ds_blur_maps.view(-1, 1, h, w))
             mask_pool_l = mask_pool_l.view(
                 b, t, 1, mask_pool_l.size(-2), mask_pool_l.size(-1)
             )
         else:
-            mask_pool_l = self.max_pool(ds_mask_in_local.view(-1, 1, h, w))
+            mask_pool_l = self.max_pool(ds_blur_maps_local.view(-1, 1, h, w))
             mask_pool_l = mask_pool_l.view(
                 b, l_t, 1, mask_pool_l.size(-2), mask_pool_l.size(-1)
             )
 
-        prop_mask_in = torch.cat([ds_mask_in_local, ds_mask_updated_local], dim=2)
+        prop_mask_in = torch.cat([ds_blur_maps_local, ds_bin_masks_local], dim=2)
         _, _, local_feat, _ = self.feat_prop_module(
             local_feat, ds_flows_f, ds_flows_b, prop_mask_in, interpolation
         )
