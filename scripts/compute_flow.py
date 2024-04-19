@@ -121,8 +121,8 @@ if __name__ == "__main__":
             flow_f = flow_f[0].permute(1, 2, 0).cpu().numpy()
             flow_b = flow_b[0].permute(1, 2, 0).cpu().numpy()
 
-            # flow_f = resize_flow(flow_f, w_new, h_new)
-            # flow_b = resize_flow(flow_b, w_new, h_new)
+            # flow_f = resize_flow(flow_f, h_new, w_new)
+            # flow_b = resize_flow(flow_b, h_new, w_new)
 
             flowwrite(flow_f, save_flow_f, quantize=False)
             flowwrite(flow_b, save_flow_b, quantize=False)

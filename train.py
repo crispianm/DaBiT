@@ -69,7 +69,7 @@ def main(config):
     print("==> Created {}".format(config["out_dir"]))
 
     # Model and Trainer
-    model = DepthPainter(config).to(config["device"])
+    model = DepthPainter().to(config["device"])
     print(config["net"], "network created")
 
     # teacher = ProPainter()

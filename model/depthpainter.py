@@ -15,10 +15,10 @@ from model.modules.sparse_transformer import (
 from model.modules.spectral_norm import spectral_norm as _spectral_norm
 from model.modules.flow_loss_utils import flow_warp
 from model.modules.deformconv import ModulatedDeformConv2d
-from basicvsr.mmedit.models.backbones.sr_backbones.basicvsr_net import (
+from model.basicvsr_net import (
     ResidualBlocksWithInputConv,
 )
-from basicvsr.mmedit.models.common import PixelShufflePack
+from model.upsample import PixelShufflePack
 from mmcv.ops import ModulatedDeformConv2d, modulated_deform_conv2d
 
 from .misc import constant_init
@@ -300,7 +300,7 @@ class deconv(nn.Module):
 
 
 class DepthPainter(BaseNetwork):
-    def __init__(self, config, init_weights=False, model_path=None):
+    def __init__(self, init_weights=False, model_path=None):
         super(DepthPainter, self).__init__()
         channel = 128
         hidden = 512
@@ -308,7 +308,6 @@ class DepthPainter(BaseNetwork):
         self.num_blocks = 7
         self.cpu_cache_length = 100
         self.cpu_cache = False
-        self.device = config["device"]
 
         # encoder
         self.encoder = Encoder()

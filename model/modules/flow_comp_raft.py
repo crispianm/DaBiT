@@ -28,9 +28,9 @@ class RAFT_bi(nn.Module):
     """Flow completion loss"""
     def __init__(self, model_path='weights/raft-things.pth', device='cuda'):
         super().__init__()
-        self.fix_raft = initialize_RAFT(model_path, device=device)
+        self.raft = initialize_RAFT(model_path, device=device)
 
-        for p in self.fix_raft.parameters():
+        for p in self.raft.parameters():
             p.requires_grad = False
 
         self.l1_criterion = nn.L1Loss()
@@ -45,8 +45,8 @@ class RAFT_bi(nn.Module):
             gtlf_2 = gt_local_frames[:, 1:, :, :, :].reshape(-1, c, h, w)
             # print(gtlf_1.shape)
 
-            _, gt_flows_forward = self.fix_raft(gtlf_1, gtlf_2, iters=iters, test_mode=True)
-            _, gt_flows_backward = self.fix_raft(gtlf_2, gtlf_1, iters=iters, test_mode=True)
+            _, gt_flows_forward = self.raft(gtlf_1, gtlf_2, iters=iters, test_mode=True)
+            _, gt_flows_backward = self.raft(gtlf_2, gtlf_1, iters=iters, test_mode=True)
 
         
         gt_flows_forward = gt_flows_forward.view(b, l_t-1, 2, h, w)

@@ -1,5 +1,5 @@
 import numpy as np
-from skimage import measure
+from skimage.metrics import structural_similarity
 from scipy import linalg
 
 import torch
@@ -45,10 +45,8 @@ def calc_psnr_and_ssim(img1, img2):
     img2 = img2.astype(np.float64)
 
     psnr = calculate_psnr(img1, img2)
-    ssim = measure.compare_ssim(img1,
-                                img2,
-                                data_range=255,
-                                multichannel=True,
+    ssim = structural_similarity(img1,img2,data_range=255,
+                                channel_axis=2,
                                 win_size=65)
 
     return psnr, ssim
