@@ -182,10 +182,9 @@ class Trainer:
         print(f"\nsaving model to {model_path} ")
 
         # remove .module for saving
-        model = self.model
 
         # save checkpoints
-        torch.save(model.state_dict(), model_path)
+        torch.save(self.model.state_dict(), model_path)
         torch.save(
             {
                 "epoch": self.epoch,
@@ -479,7 +478,7 @@ class Trainer:
 
             # console logs
             pbar.update(1)
-            pbar.set_description((f"Loss: {total_loss.item():.3f}"))
+            pbar.set_description((f"LR: {self.get_lr()} Loss: {total_loss.item():.3f}"))
 
             # saving models
             if self.iteration % self.train_args["save_freq"] == 0:

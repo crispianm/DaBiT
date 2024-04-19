@@ -305,35 +305,13 @@ if __name__ == "__main__":
                 gt_flows_bi = raft(blurry_frames, iters=args.raft_iter)
                 torch.cuda.empty_cache()
 
-            # ---- complete flow ----
-            flow_length = gt_flows_bi[0].size(1)
-            if flow_length > args.subvideo_length:
-                pred_flows_f, pred_flows_b = [], []
-                pad_len = 5
-                for f in range(0, flow_length, args.subvideo_length):
-                    s_f = max(0, f - pad_len)
-                    e_f = min(flow_length, f + args.subvideo_length + pad_len)
-                    pad_len_s = max(0, f) - s_f
-                    pad_len_e = e_f - min(flow_length, f + args.subvideo_length)
-                    pred_flows_bi_sub, _ = flow_completion.forward_bidirect_flow(
-                        (gt_flows_bi[0][:, s_f:e_f], gt_flows_bi[1][:, s_f:e_f]), 
-                        binary_masks[:, s_f:e_f+1])
-                    pred_flows_bi_sub = flow_completion.combine_flow(
-                        (gt_flows_bi[0][:, s_f:e_f], gt_flows_bi[1][:, s_f:e_f]), 
-                        pred_flows_bi_sub, 
-                        binary_masks[:, s_f:e_f+1])
+            """
+            ####################################################################################
+            remove flow completion for test purposes
+            ####################################################################################
+            """
 
-                    pred_flows_f.append(pred_flows_bi_sub[0][:, pad_len_s:e_f-s_f-pad_len_e])
-                    pred_flows_b.append(pred_flows_bi_sub[1][:, pad_len_s:e_f-s_f-pad_len_e])
-                    torch.cuda.empty_cache()
-                    
-                pred_flows_f = torch.cat(pred_flows_f, dim=1)
-                pred_flows_b = torch.cat(pred_flows_b, dim=1)
-                pred_flows_bi = (pred_flows_f, pred_flows_b)
-            else:
-                pred_flows_bi, _ = flow_completion.forward_bidirect_flow(gt_flows_bi, binary_masks)
-                pred_flows_bi = flow_completion.combine_flow(gt_flows_bi, pred_flows_bi, binary_masks)
-                torch.cuda.empty_cache()
+            pred_flows_bi = gt_flows_bi
 
             # ---- image propagation ----
             subvideo_length_img_prop = min(100, args.subvideo_length)

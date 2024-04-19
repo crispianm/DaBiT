@@ -1,33 +1,42 @@
 {
     "seed": 2023,
     "out_dir": "experiments_model/",
-    "train_data_loader": {
-        "name": "youtube-vos",
-        "video_root": "T:/ProPainter Datasets/youtube-vos/JPEGImages",
-        "flow_root": "T:/ProPainter Datasets/youtube-vos/flows/JPEGImages",
-        "w": 432,
-        "h": 240,
+    "dl_config": {
+        "w": 864,
+        "h": 480,
         "num_local_frames": 10,
         "num_ref_frames": 1,
-        "load_flow": 1
+        "load_flow": 1,
+        "load_depth": 1,
+        "use_blur_masks": 1
+    },
+    "youtube-vos": {
+        "name": "youtube-vos",
+        "video_root": "T:/ProPainter Datasets/youtube-vos/frames",
+        "flow_root": "T:/ProPainter Datasets/youtube-vos/flows",
+        "depth_root": "T:/ProPainter Datasets/youtube-vos/depths"
+    },
+    "bvidvc": {
+        "name": "bvidvc",
+        "video_root": "T:/ProPainter Datasets/bvidvc/frames",
+        "flow_root": "T:/ProPainter Datasets/bvidvc/flows",
+        "depth_root": "T:/ProPainter Datasets/bvidvc/depths"
     },
     "losses": {
         "flow_weight": 0.25
     },
-    "model": {
-        "net": "recurrent_flow_completion"
-    },
+    "net": "recurrent_flow_completion",
     "trainer": {
         "version": "trainer_flow_w_edge",
         "type": "Adam",
         "beta1": 0,
         "beta2": 0.99,
         "lr": 5e-5,
-        "batch_size": 8,
+        "batch_size": 2,
         "num_workers": 0,
         "num_prefetch_queue": 4,
-        "log_freq": 10,
-        "save_freq": 5000,
+        "log_freq": 1,
+        "save_freq": 1000,
         "iterations": 500000,
         "scheduler": {
             "type": "MultiStepLR",

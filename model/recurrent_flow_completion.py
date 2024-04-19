@@ -239,7 +239,7 @@ class RecurrentFlowCompleteNet(nn.Module):
         super().__init__()
         self.downsample = nn.Sequential(
             nn.Conv3d(
-                3,
+                6,
                 32,
                 kernel_size=(1, 5, 5),
                 stride=(1, 2, 2),
@@ -314,14 +314,15 @@ class RecurrentFlowCompleteNet(nn.Module):
             self.load_state_dict(ckpt, strict=True)
             print("Pretrained flow completion model has loaded.")
 
-    def forward(self, masked_flows, masks):
+    def forward(self, blurry_frames, masked_flows, binary_masks):
         # masked_flows: b t-1 2 h w
-        # masks: b t-1 2 h w
+        # masks: b t-1 1 h w
         b, t, _, h, w = masked_flows.size()
+        blurry_frames = blurry_frames.permute(0, 2, 1, 3, 4)
         masked_flows = masked_flows.permute(0, 2, 1, 3, 4)
-        masks = masks.permute(0, 2, 1, 3, 4)
+        binary_masks = binary_masks.permute(0, 2, 1, 3, 4)
 
-        inputs = torch.cat((masked_flows, masks), dim=1)
+        inputs = torch.cat((masked_flows, binary_masks, blurry_frames), dim=1)
 
         x = self.downsample(inputs)
 
@@ -355,49 +356,53 @@ class RecurrentFlowCompleteNet(nn.Module):
 
         return flow, edge
 
-    def forward_bidirect_flow(self, masked_flows_bi, masks):
+    def forward_bidirect_flow(self, blurry_frames, gt_flows_bi, binary_masks):
         """
         Args:
             masked_flows_bi: [masked_flows_f, masked_flows_b] | (b t-1 2 h w), (b t-1 2 h w)
             masks: b t 1 h w
         """
-        masks_forward = masks[:, :-1, ...].contiguous()
-        masks_backward = masks[:, 1:, ...].contiguous()
+
+        blurry_frames_f = blurry_frames[:, :-1, ...].contiguous()
+        blurry_frames_b = blurry_frames[:, 1:, ...].contiguous()
+
+        bin_masks_f = binary_masks[:, :-1, ...].contiguous()
+        bin_masks_b = binary_masks[:, 1:, ...].contiguous()
 
         # mask flow
-        masked_flows_forward = masked_flows_bi[0] * (1 - masks_forward)
-        masked_flows_backward = masked_flows_bi[1] * (1 - masks_backward)
+        masked_flows_f = gt_flows_bi[0] * (1 - bin_masks_f)
+        masked_flows_b = gt_flows_bi[1] * (1 - bin_masks_b)
 
         # -- completion --
         # forward
-        pred_flows_forward, pred_edges_forward = self.forward(
-            masked_flows_forward, masks_forward
+        pred_flows_f, pred_edges_f = self.forward(
+            blurry_frames_f, masked_flows_f, bin_masks_f
         )
 
         # backward
-        masked_flows_backward = torch.flip(masked_flows_backward, dims=[1])
-        masks_backward = torch.flip(masks_backward, dims=[1])
-        pred_flows_backward, pred_edges_backward = self.forward(
-            masked_flows_backward, masks_backward
+        masked_flows_b = torch.flip(masked_flows_b, dims=[1])
+        bin_masks_b = torch.flip(bin_masks_b, dims=[1])
+        pred_flows_b, pred_edges_b = self.forward(
+            blurry_frames_b, masked_flows_b, bin_masks_b
         )
-        pred_flows_backward = torch.flip(pred_flows_backward, dims=[1])
+        pred_flows_b = torch.flip(pred_flows_b, dims=[1])
         if self.training:
-            pred_edges_backward = torch.flip(pred_edges_backward, dims=[1])
+            pred_edges_b = torch.flip(pred_edges_b, dims=[1])
 
-        return [pred_flows_forward, pred_flows_backward], [
-            pred_edges_forward,
-            pred_edges_backward,
+        return [pred_flows_f, pred_flows_b], [
+            pred_edges_f,
+            pred_edges_b,
         ]
 
-    def combine_flow(self, masked_flows_bi, pred_flows_bi, masks):
-        masks_forward = masks[:, :-1, ...].contiguous()
-        masks_backward = masks[:, 1:, ...].contiguous()
+    def combine_flow(self, masked_flows_bi, pred_flows_bi, binary_masks):
+        bin_masks_f = binary_masks[:, :-1, ...].contiguous()
+        bin_masks_b = binary_masks[:, 1:, ...].contiguous()
 
-        pred_flows_forward = pred_flows_bi[0] * masks_forward + masked_flows_bi[0] * (
-            1 - masks_forward
+        pred_flows_f = pred_flows_bi[0] * bin_masks_f + masked_flows_bi[0] * (
+            1 - bin_masks_f
         )
-        pred_flows_backward = pred_flows_bi[1] * masks_backward + masked_flows_bi[1] * (
-            1 - masks_backward
+        pred_flows_b = pred_flows_bi[1] * bin_masks_b + masked_flows_bi[1] * (
+            1 - bin_masks_b
         )
 
-        return pred_flows_forward, pred_flows_backward
+        return pred_flows_f, pred_flows_b
