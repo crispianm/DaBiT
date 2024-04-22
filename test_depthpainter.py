@@ -8,6 +8,7 @@ import time
 
 import torch
 import torchvision
+from torch.nn import functional
 import matplotlib.pyplot as plt
 
 from core.metrics import calc_psnr_and_ssim
@@ -146,6 +147,57 @@ def get_gt_frames(gt_dir, video_name):
     return frames
 
 
+def dilate_mask(
+    image, strel=torch.ones((9, 9)).to("cuda"), origin=(4, 4), border_value=0
+):
+    """
+    Performs dilation operation on a given image using a structural element.
+
+    Args:
+        image (torch.Tensor): The input image tensor.
+        strel (torch.Tensor): The structural element tensor.
+        origin (tuple, optional): The origin coordinates of the structural element. Defaults to (0, 0).
+        border_value (int, optional): The value to be used for padding the image. Defaults to 0.
+
+    Returns:
+        torch.Tensor: The dilated image tensor.
+
+    Raises:
+        ValueError: If the dimensions of the image and structural element do not match.
+
+    Example:
+        image = torch.tensor([[1, 0, 1],
+                              [0, 1, 0],
+                              [1, 0, 1]])
+        strel = torch.tensor([[1, 1, 1],
+                              [1, 1, 1],
+                              [1, 1, 1]])
+        dilated_image = dilation_pytorch(image, strel, origin=(1, 1))
+        print(dilated_image)
+        # Output: tensor([[1, 1, 1],
+        #                 [1, 1, 1],
+        #                 [1, 1, 1]])
+    """
+
+    image_pad = functional.pad(
+        image,
+        [
+            origin[0],
+            strel.shape[0] - origin[0] - 1,
+            origin[1],
+            strel.shape[1] - origin[1] - 1,
+        ],
+        mode="constant",
+        value=border_value,
+    )
+    image_unfold = functional.unfold(image_pad, kernel_size=strel.shape)
+    strel_flatten = torch.flatten(strel).unsqueeze(0).unsqueeze(-1)
+    sums = image_unfold + strel_flatten
+    result, _ = sums.max(dim=1)
+
+    return torch.reshape(result, image.shape)
+
+
 if __name__ == "__main__":
 
     if torch.cuda.is_available():
@@ -204,8 +256,13 @@ if __name__ == "__main__":
     raft = RAFT_bi(model_path="./weights/raft-things.pth", device=device).to(device)
 
     flow_completion = RecurrentFlowCompleteNet()
+    # flow_completion.load_state_dict(
+    #     torch.load("./weights/recurrent_flow_completion.pth")
+    # )
     flow_completion.load_state_dict(
-        torch.load("./weights/recurrent_flow_completion.pth")
+        torch.load(
+            "C:/Users/wg19671/repos/DepthPainter/experiments_model/recurrent_flow_completion_train_flowcomp/gen_025000.pth"
+        )
     )
     for p in flow_completion.parameters():
         p.requires_grad = False
@@ -218,6 +275,11 @@ if __name__ == "__main__":
 
     depthpainter = DepthPainter()
     depthpainter.load_state_dict(torch.load("./weights/DepthPainter.pth"))
+    # depthpainter.load_state_dict(
+    #     torch.load(
+    #         "C:/Users/wg19671/repos/DepthPainter/output/depthpainter_train_depthpainter/model_169000.pth"
+    #     )
+    # )
     for p in depthpainter.parameters():
         p.requires_grad = False
     depthpainter.to(device)
@@ -227,15 +289,17 @@ if __name__ == "__main__":
     # Begin Testing Loop
     ##############################################
 
-    test_dir = os.path.join(args.input, "blur_tests_mini2")
+    test_dir = os.path.join(args.input, "blur_tests_mini")
 
     metrics = ["PSNR", "SSIM"]
     results_dict = {k: [] for k in metrics}
     results_dict["Times"] = []
     results_dict["Frames"] = []
-    logfile = open(os.path.join(args.output, "results.txt"), "w")
+    logfile = open(os.path.join(args.output, "results.txt"), "a")
 
-    for video_name in tqdm(os.listdir(test_dir)):
+    pbar = tqdm(os.listdir(test_dir))
+
+    for video_name in pbar:
 
         blurry_frames, depths, blur_maps, fps = read_from_videos(test_dir, video_name)
 
@@ -244,6 +308,12 @@ if __name__ == "__main__":
         blurry_frames = blurry_frames[:, :3, :, :]  # only use RGB channels
         depths = depths[:, 0, :, :].unsqueeze(1) / 255.0  # norm to 0, 1
         blur_maps = blur_maps[:, 0, :, :].unsqueeze(1) / 255.0  # norm to 0, 1
+
+        # resize = torchvision.transforms.Resize(size=(240, 432), antialias=None)
+        # blurry_frames = resize(blurry_frames)
+        # depths = resize(depths)
+        # blur_maps = resize(blur_maps)
+
         input_size = blurry_frames[0].shape[-2:]  # height, width
         h, w = input_size
 
@@ -256,14 +326,17 @@ if __name__ == "__main__":
             blur_maps.unsqueeze(0).to(device),
         )
 
-        binary_masks = (blur_maps > 0.1).float()
+        binary_masks = dilate_mask((blur_maps[0] > 0.1).float()).unsqueeze(0)
 
-        # print("Blurry frames shape: ", blurry_frames.shape, "\n(Min, Max) = (", blurry_frames.min().item(), ", " ,blurry_frames.max().item(), ")")
-        # print("Depths shape: ", depths.shape, "\n(Min, Max) = (", depths.min().item(), ", " ,depths.max().item(), ")")
-        # print("blur_maps shape: ", blur_maps.shape, "\n(Min, Max) = (", blur_maps.min().item(), ", " ,blur_maps.max().item(), ")")
+        # print("Blurry frames shape: ", blurry_frames.shape, "/n(Min, Max) = (", blurry_frames.min().item(), ", " ,blurry_frames.max().item(), ")")
+        # print("Depths shape: ", depths.shape, "/n(Min, Max) = (", depths.min().item(), ", " ,depths.max().item(), ")")
+        # print("blur_maps shape: ", blur_maps.shape, "/n(Min, Max) = (", blur_maps.min().item(), ", " ,blur_maps.max().item(), ")")
 
         video_length = blurry_frames.shape[1]
-        print(f"Processing: {video_name} ({video_length} frames)")
+
+        pbar.update(1)
+        pbar.set_description(f"Processing: {video_name} ({video_length} frames)")
+        # print(f"Processing: {video_name} ({video_length} frames)")
 
         ##############################################
         # Flow Completion
@@ -316,23 +389,34 @@ if __name__ == "__main__":
                     pad_len_s = max(0, f) - s_f
                     pad_len_e = e_f - min(flow_length, f + args.subvideo_length)
                     pred_flows_bi_sub, _ = flow_completion.forward_bidirect_flow(
-                        (gt_flows_bi[0][:, s_f:e_f], gt_flows_bi[1][:, s_f:e_f]), 
-                        binary_masks[:, s_f:e_f+1])
+                        blurry_frames[:, s_f : e_f + 1],
+                        (gt_flows_bi[0][:, s_f:e_f], gt_flows_bi[1][:, s_f:e_f]),
+                        binary_masks[:, s_f : e_f + 1],
+                    )
                     pred_flows_bi_sub = flow_completion.combine_flow(
-                        (gt_flows_bi[0][:, s_f:e_f], gt_flows_bi[1][:, s_f:e_f]), 
-                        pred_flows_bi_sub, 
-                        binary_masks[:, s_f:e_f+1])
+                        (gt_flows_bi[0][:, s_f:e_f], gt_flows_bi[1][:, s_f:e_f]),
+                        pred_flows_bi_sub,
+                        binary_masks[:, s_f : e_f + 1],
+                    )
 
-                    pred_flows_f.append(pred_flows_bi_sub[0][:, pad_len_s:e_f-s_f-pad_len_e])
-                    pred_flows_b.append(pred_flows_bi_sub[1][:, pad_len_s:e_f-s_f-pad_len_e])
+                    pred_flows_f.append(
+                        pred_flows_bi_sub[0][:, pad_len_s : e_f - s_f - pad_len_e]
+                    )
+                    pred_flows_b.append(
+                        pred_flows_bi_sub[1][:, pad_len_s : e_f - s_f - pad_len_e]
+                    )
                     torch.cuda.empty_cache()
-                    
+
                 pred_flows_f = torch.cat(pred_flows_f, dim=1)
                 pred_flows_b = torch.cat(pred_flows_b, dim=1)
                 pred_flows_bi = (pred_flows_f, pred_flows_b)
             else:
-                pred_flows_bi, _ = flow_completion.forward_bidirect_flow(gt_flows_bi, binary_masks)
-                pred_flows_bi = flow_completion.combine_flow(gt_flows_bi, pred_flows_bi, binary_masks)
+                pred_flows_bi, _ = flow_completion.forward_bidirect_flow(
+                    blurry_frames, gt_flows_bi, binary_masks
+                )
+                pred_flows_bi = flow_completion.combine_flow(
+                    gt_flows_bi, pred_flows_bi, binary_masks
+                )
                 torch.cuda.empty_cache()
 
             # ---- image propagation ----
@@ -400,7 +484,7 @@ if __name__ == "__main__":
         # Run Model
         ##############################################
 
-        for f in tqdm(range(0, video_length, neighbor_stride)):
+        for f in tqdm(range(0, video_length, neighbor_stride), leave=False):
             neighbor_ids = [
                 i
                 for i in range(
@@ -431,20 +515,22 @@ if __name__ == "__main__":
                     l_t,
                 )
                 pred_img = ori_pred_img.view(-1, 3, out_h, out_w).permute(0, 2, 3, 1)
-                pred_img = (pred_img - torch.min(pred_img)) / (torch.max(pred_img) - torch.min(pred_img))
+                pred_img = (pred_img - torch.min(pred_img)) / (
+                    torch.max(pred_img) - torch.min(pred_img)
+                )
                 for i in range(len(neighbor_ids)):
                     idx = neighbor_ids[i]
                     img = np.array(pred_img[i].cpu().numpy() * 255).astype(np.uint8)
-                    # if comp_frames[idx] is None:
-                    #     comp_frames[idx] = img
-                    # else:
-                    #     comp_frames[idx] = (
-                    #         comp_frames[idx].astype(np.float32) * 0.5
-                    #         + img.astype(np.float32) * 0.5
-                    #     )
+                    if comp_frames[idx] is None:
+                        comp_frames[idx] = img
+                    else:
+                        comp_frames[idx] = (
+                            comp_frames[idx].astype(np.float32) * 0.5
+                            + img.astype(np.float32) * 0.5
+                        )
 
-                    # comp_frames[idx] = comp_frames[idx].astype(np.uint8)
-                    comp_frames[idx] = img.astype(np.uint8)
+                    comp_frames[idx] = comp_frames[idx].astype(np.uint8)
+                    # comp_frames[idx] = img.astype(np.uint8)
 
             torch.cuda.empty_cache()
 
@@ -455,14 +541,29 @@ if __name__ == "__main__":
             os.makedirs(save_root, exist_ok=True)
 
             masked_frame_for_save = []
+            green_masked_frame_for_save = []
             for i in range(len(blurry_frames[0])):
                 img = np.array(
                     ((blurry_frames[0][i] + 1) / 2).cpu().permute(1, 2, 0) * 255
                 )
                 masked_frame_for_save.append(img.astype(np.uint8))
+                mask_ = np.array(binary_masks[0][i].cpu().permute(1, 2, 0))
+                green = np.zeros([h, w, 3])
+                green[:, :, 1] = 255
+                alpha = 0.6
+                fuse_img = (1 - alpha) * img + alpha * green
+                fuse_img = mask_ * fuse_img + (1 - mask_) * img
+                green_masked_frame_for_save.append(fuse_img.astype(np.uint8))
+
             imageio.mimwrite(
                 os.path.join(save_root, "masked_in.mp4"),
                 masked_frame_for_save,
+                fps=10,
+                quality=7,
+            )
+            imageio.mimwrite(
+                os.path.join(save_root, "green_masked_in.mp4"),
+                green_masked_frame_for_save,
                 fps=10,
                 quality=7,
             )
@@ -473,15 +574,19 @@ if __name__ == "__main__":
                 quality=7,
             )
 
-            print(f"Results are saved in {save_root}")
+            pbar.update(1)
+            pbar.set_description(f"Videos saved.")
+            # print(f"Results are saved in {save_root}")
             torch.cuda.empty_cache()
 
         # compute metrics
+        pbar.set_description(f"Computing metrics for {video_name}")
+
         gt_dir = os.path.join(args.input, "gt_resized")
         gt_frames = get_gt_frames(gt_dir, video_name)
 
         psnr_list, ssim_list = [], []
-        for comp_frame, gt_frame in zip(comp_frames, gt_frames):
+        for comp_frame, gt_frame in tqdm(zip(comp_frames, gt_frames), leave=False):
 
             psnr, ssim = calc_psnr_and_ssim(comp_frame, gt_frame)
             psnr_list.append(psnr)
@@ -490,12 +595,25 @@ if __name__ == "__main__":
         results_dict["PSNR"].append(np.mean(psnr_list))
         results_dict["SSIM"].append(np.mean(ssim_list))
 
-        print(
+        pbar.update(1)
+        pbar.write(
             f"{video_name} PSNR: {np.mean(psnr_list):.2f}, SSIM: {np.mean(ssim_list):.4f}"
         )
 
+        msg = (
+            # f"{video_name} PSNR: {np.mean(psnr_list):.2f}, SSIM: {np.mean(ssim_list):.4f}"
+            # + "\n"
+            "{:<15s} -- {}".format(
+                f"{video_name}",
+                f"PSNR: {np.mean(psnr_list):.2f}, SSIM: {np.mean(ssim_list):.4f}",
+            )
+            + "\n"
+        )
+        logfile.write(msg)
+
     msg = (
-        "{:<15s} -- {}".format(
+        "\n"
+        + "{:<15s} -- {}".format(
             "Average", {k: round(np.mean(results_dict[k]), 3) for k in metrics}
         )
         + "\n\n"

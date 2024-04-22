@@ -41,7 +41,7 @@ class Trainer:
         # Initialize RAFT
         self.fix_raft = RAFT_bi(device=self.device)
         self.fix_flow_complete = RecurrentFlowCompleteNet(
-            "./weights/recurrent_flow_completion.pth"
+            "C:/Users/wg19671/repos/DepthPainter/experiments_model/recurrent_flow_completion_train_flowcomp/gen_025000.pth"
         )
         for p in self.fix_flow_complete.parameters():
             p.requires_grad = False
@@ -279,7 +279,7 @@ class Trainer:
 
             # ---- Complete Flow ----
             pred_flows_bi, _ = self.fix_flow_complete.forward_bidirect_flow(
-                gt_flows_bi, local_masks
+                blurry_frames[:, :l_t], gt_flows_bi, local_masks
             )
             pred_flows_bi = self.fix_flow_complete.combine_flow(
                 gt_flows_bi, pred_flows_bi, local_masks

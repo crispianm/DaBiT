@@ -359,7 +359,8 @@ class RecurrentFlowCompleteNet(nn.Module):
     def forward_bidirect_flow(self, blurry_frames, gt_flows_bi, binary_masks):
         """
         Args:
-            masked_flows_bi: [masked_flows_f, masked_flows_b] | (b t-1 2 h w), (b t-1 2 h w)
+            blurry_frames: b t 3 h w
+            gt_flows_bi: [gt_flows_f, gt_flows_b] | (b t-1 2 h w), (b t-1 2 h w)
             masks: b t 1 h w
         """
 

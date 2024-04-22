@@ -35,7 +35,7 @@
         "batch_size": 2,
         "num_workers": 0,
         "num_prefetch_queue": 4,
-        "log_freq": 1,
+        "log_freq": 10,
         "save_freq": 1000,
         "iterations": 500000,
         "scheduler": {

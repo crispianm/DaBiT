@@ -278,7 +278,7 @@ class FlowCompTrainer:
             self.update_learning_rate()
 
             # write image to tensorboard
-            if self.iteration % 50 == 0 and self.writer is not None:
+            if self.iteration % 100 == 0 and self.writer is not None:
                 t = 5
                 # forward to cpu
                 gt_flows_forward_cpu = flow_to_image(gt_flows_bi[0][0]).cpu()
