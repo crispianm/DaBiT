@@ -364,8 +364,8 @@ class RecurrentFlowCompleteNet(nn.Module):
             masks: b t 1 h w
         """
 
-        blurry_frames_f = blurry_frames[:, :-1, ...].contiguous()
-        blurry_frames_b = blurry_frames[:, 1:, ...].contiguous()
+        blurry_frames_f = blurry_frames[:, :-1, ...]
+        blurry_frames_b = blurry_frames[:, 1:, ...]
 
         bin_masks_f = binary_masks[:, :-1, ...].contiguous()
         bin_masks_b = binary_masks[:, 1:, ...].contiguous()

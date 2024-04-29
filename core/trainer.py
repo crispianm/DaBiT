@@ -20,14 +20,13 @@ from RAFT.utils.flow_viz_pt import flow_to_image
 
 
 class Trainer:
-    def __init__(self, config, prefetcher, model, teacher, start_epoch=0):
+    def __init__(self, config, prefetcher, model, start_epoch=0):
 
         self.l1_loss = nn.L1Loss()
         self.charbonnier_loss = CharbonnierLoss()
 
         self.config = config
         self.model = model
-        self.teacher_model = teacher
         self.device = config["device"]
         self.epoch = start_epoch
         self.iteration = 0
@@ -41,7 +40,7 @@ class Trainer:
         # Initialize RAFT
         self.fix_raft = RAFT_bi(device=self.device)
         self.fix_flow_complete = RecurrentFlowCompleteNet(
-            "C:/Users/wg19671/repos/DepthPainter/experiments_model/recurrent_flow_completion_train_flowcomp/gen_025000.pth"
+            "C:/Users/wg19671/repos/DepthPainter/experiments_model/recurrent_flow_completion_train_flowcomp/gen_108000.pth"
         )
         for p in self.fix_flow_complete.parameters():
             p.requires_grad = False
@@ -228,7 +227,7 @@ class Trainer:
                 depths.to(device).float(),
                 blur_maps.to(device).float(),
             )
-
+            
             # frames: [b, t, c, ori_h, ori_w]
             # blurry_frames: [b, t, c, h, w]
             # masks: [b, t, 1, h, w]
@@ -248,17 +247,11 @@ class Trainer:
                 :,
                 :l_t,
             ]
-            binary_masks = (blur_maps > 0.1).float()
+            binary_masks = (blur_maps > torch.min(blur_maps)).float()
             local_masks = binary_masks[
                 :,
                 :l_t,
             ].contiguous()
-
-            # Get the masked frames, which are blurred at the nonzero region(s) of the mask
-            # if self.config["dl_config"]["use_blur_maps"]:
-            #     blurry_frames = get_blurred_blurry_frames(frames, masks)
-            # else:
-            #     blurry_frames = frames * (1 - masks)
 
             masked_local_frames = blurry_frames[
                 :,
@@ -270,12 +263,6 @@ class Trainer:
                 gt_flows_bi = self.fix_raft(gt_local_frames)
             else:
                 gt_flows_bi = (flows_f.to(device), flows_b.to(device))
-
-            # ---- Complete Depth ----
-            # TODO: Finish this
-            # with torch.no_grad():
-            #     completed_depth = self.depth_completion_model(depths * (1.0 - mask).float(), mask)
-            completed_depths = depths
 
             # ---- Complete Flow ----
             pred_flows_bi, _ = self.fix_flow_complete.forward_bidirect_flow(
@@ -310,7 +297,7 @@ class Trainer:
             # ---- Feature Propagation + Transformer + Super Resolution ----
             ori_pred_imgs = self.model(
                 updated_frames,
-                completed_depths,
+                depths,
                 pred_flows_bi,
                 blur_maps,
                 updated_binary_masks,
@@ -353,25 +340,6 @@ class Trainer:
             self.add_summary(self.writer, "loss/hole_loss", hole_loss.item())
             self.add_summary(self.writer, "loss/valid_loss", valid_loss.item())
 
-            # # Knowledge Distillation Loss
-            # if self.config["losses"]["kd_weight"] > 0:
-            #     teacher_outputs = self.teacher_model(
-            #         updated_frames
-            #         * (1 - updated_binary_masks),  # Replace blur with zeros for teacher model
-            #         pred_flows_bi,
-            #         masks,
-            #         updated_binary_masks,
-            #         l_t,
-            #     ).view(b, -1, c, h, w)
-
-            #     kd_loss = (
-            #         self.l1_loss(pred_local_frames, teacher_outputs)
-            #         * self.config["losses"]["kd_weight"]
-            #     )
-            #     self.add_summary(self.writer, "loss/kd_loss", kd_loss.item())
-            # else:
-            #     kd_loss = 0
-
             # Super Resolution Loss
             if self.config["losses"]["sr_weight"] > 0:
                 sr_loss = (
@@ -390,7 +358,7 @@ class Trainer:
             self.update_learning_rate()
 
             # write images to tensorboard
-            if self.iteration % 250 == 0:
+            if self.iteration % 100 == 0:
                 # img to cpu
                 gt_local_frames_cpu = (
                     (gt_local_frames.view(b, -1, 3, h, w) + 1) / 2.0

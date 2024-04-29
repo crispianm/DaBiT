@@ -147,6 +147,18 @@ def get_gt_frames(gt_dir, video_name):
     return frames
 
 
+def print_summary(name, namestring):
+    print(
+        f"{namestring} shape: ",
+        name.shape,
+        "\n\t(Min, Max) = (",
+        name.min().item(),
+        ", ",
+        name.max().item(),
+        ")",
+    )
+
+
 def dilate_mask(
     image, strel=torch.ones((9, 9)).to("cuda"), origin=(4, 4), border_value=0
 ):
@@ -161,22 +173,6 @@ def dilate_mask(
 
     Returns:
         torch.Tensor: The dilated image tensor.
-
-    Raises:
-        ValueError: If the dimensions of the image and structural element do not match.
-
-    Example:
-        image = torch.tensor([[1, 0, 1],
-                              [0, 1, 0],
-                              [1, 0, 1]])
-        strel = torch.tensor([[1, 1, 1],
-                              [1, 1, 1],
-                              [1, 1, 1]])
-        dilated_image = dilation_pytorch(image, strel, origin=(1, 1))
-        print(dilated_image)
-        # Output: tensor([[1, 1, 1],
-        #                 [1, 1, 1],
-        #                 [1, 1, 1]])
     """
 
     image_pad = functional.pad(
@@ -195,7 +191,8 @@ def dilate_mask(
     sums = image_unfold + strel_flatten
     result, _ = sums.max(dim=1)
 
-    return torch.reshape(result, image.shape)
+    output = torch.reshape(result, image.shape)
+    return output
 
 
 if __name__ == "__main__":
@@ -215,7 +212,6 @@ if __name__ == "__main__":
         default="T:/ProPainter Datasets/davis",
         help="Path of the input video or image folder.",
     )
-
     parser.add_argument(
         "-o",
         "--output",
@@ -256,14 +252,7 @@ if __name__ == "__main__":
     raft = RAFT_bi(model_path="./weights/raft-things.pth", device=device).to(device)
 
     flow_completion = RecurrentFlowCompleteNet()
-    # flow_completion.load_state_dict(
-    #     torch.load("./weights/recurrent_flow_completion.pth")
-    # )
-    flow_completion.load_state_dict(
-        torch.load(
-            "C:/Users/wg19671/repos/DepthPainter/experiments_model/recurrent_flow_completion_train_flowcomp/gen_025000.pth"
-        )
-    )
+    flow_completion.load_state_dict(torch.load("./weights/FlowRefocus.pth"))
     for p in flow_completion.parameters():
         p.requires_grad = False
     flow_completion.to(device)
@@ -275,11 +264,6 @@ if __name__ == "__main__":
 
     depthpainter = DepthPainter()
     depthpainter.load_state_dict(torch.load("./weights/DepthPainter.pth"))
-    # depthpainter.load_state_dict(
-    #     torch.load(
-    #         "C:/Users/wg19671/repos/DepthPainter/output/depthpainter_train_depthpainter/model_169000.pth"
-    #     )
-    # )
     for p in depthpainter.parameters():
         p.requires_grad = False
     depthpainter.to(device)
@@ -289,19 +273,19 @@ if __name__ == "__main__":
     # Begin Testing Loop
     ##############################################
 
-    test_dir = os.path.join(args.input, "blur_tests_mini")
+    test_dir = os.path.join(args.input, "blur_tests")
 
-    metrics = ["PSNR", "SSIM"]
+    metrics = ["PSNR", "SSIM", "LPIPS"]
     results_dict = {k: [] for k in metrics}
     results_dict["Times"] = []
     results_dict["Frames"] = []
     logfile = open(os.path.join(args.output, "results.txt"), "a")
 
     pbar = tqdm(os.listdir(test_dir))
-
     for video_name in pbar:
 
         blurry_frames, depths, blur_maps, fps = read_from_videos(test_dir, video_name)
+        video_start_time = time.time()
 
         # Preprocess frames
         blurry_frames = (blurry_frames / 255 * 2) - 1  # norm to -1, 1
@@ -326,17 +310,13 @@ if __name__ == "__main__":
             blur_maps.unsqueeze(0).to(device),
         )
 
-        binary_masks = dilate_mask((blur_maps[0] > 0.1).float()).unsqueeze(0)
-
-        # print("Blurry frames shape: ", blurry_frames.shape, "/n(Min, Max) = (", blurry_frames.min().item(), ", " ,blurry_frames.max().item(), ")")
-        # print("Depths shape: ", depths.shape, "/n(Min, Max) = (", depths.min().item(), ", " ,depths.max().item(), ")")
-        # print("blur_maps shape: ", blur_maps.shape, "/n(Min, Max) = (", blur_maps.min().item(), ", " ,blur_maps.max().item(), ")")
+        # Create binary masks and dilated masks
+        binary_masks = dilate_mask(
+            (blur_maps[0] > torch.min(blur_maps)).float()
+        ).unsqueeze(0)
 
         video_length = blurry_frames.shape[1]
-
-        pbar.update(1)
         pbar.set_description(f"Processing: {video_name} ({video_length} frames)")
-        # print(f"Processing: {video_name} ({video_length} frames)")
 
         ##############################################
         # Flow Completion
@@ -480,6 +460,27 @@ if __name__ == "__main__":
         else:
             ref_num = -1
 
+        # # Save images of gt_flows_bi[0]
+        # for i in tqdm(range(video_length-1)):
+        #     gt_flow_img = flow_to_image(gt_flows_bi[0][0][i]).permute(1,2,0).cpu().numpy().astype(np.uint8)
+        #     flow_img = flow_to_image(pred_flows_bi[0][0][i]).permute(1,2,0).cpu().numpy().astype(np.uint8)
+        #     # print(flow_img)
+        #     imageio.imwrite(f"T:/ProPainter Datasets/davis/results/boat/gt_flows/gt_flow_{i}.png", gt_flow_img)
+        #     imageio.imwrite(f"T:/ProPainter Datasets/davis/results/boat/pred_flows/pred_flow_{i}.png", flow_img)
+
+        #     mask_ = np.array(binary_masks[0][i].cpu().permute(1, 2, 0))
+        #     green = np.zeros([h, w, 3])
+        #     green[:, :, 1] = 255
+        #     alpha = 0.6
+        #     fuse_img = (1 - alpha) * flow_img + alpha * green
+        #     fuse_img = mask_ * fuse_img + (1 - mask_) * flow_img
+        #     imageio.imwrite(f"T:/ProPainter Datasets/davis/results/boat/masked_flows/gt_flow_{i}.png", fuse_img.astype(np.uint8))
+
+        #     # if mask_.ndim == 2:  # Check if the mask has a single color channel
+        #     mask_ = mask_[:, :, 0]*255
+        #     mask_ = np.repeat(mask_[:, :, np.newaxis], 3, axis=2)  # Convert to three-channel image
+        #     imageio.imwrite(f"T:/ProPainter Datasets/davis/results/boat/binary masks/mask_{i}.png", mask_.astype(np.uint8))
+
         ##############################################
         # Run Model
         ##############################################
@@ -515,9 +516,7 @@ if __name__ == "__main__":
                     l_t,
                 )
                 pred_img = ori_pred_img.view(-1, 3, out_h, out_w).permute(0, 2, 3, 1)
-                pred_img = (pred_img - torch.min(pred_img)) / (
-                    torch.max(pred_img) - torch.min(pred_img)
-                )
+                pred_img = ((pred_img + 1) / 2).clamp(0, 1)
                 for i in range(len(neighbor_ids)):
                     idx = neighbor_ids[i]
                     img = np.array(pred_img[i].cpu().numpy() * 255).astype(np.uint8)
@@ -530,9 +529,15 @@ if __name__ == "__main__":
                         )
 
                     comp_frames[idx] = comp_frames[idx].astype(np.uint8)
-                    # comp_frames[idx] = img.astype(np.uint8)
 
             torch.cuda.empty_cache()
+        video_end_time = time.time()
+
+        avg_runtime = (video_end_time - video_start_time) / video_length
+        results_dict["Times"].append(avg_runtime)
+        # pbar.write(
+        #     f"{video_name} Average Runtime (s): {avg_runtime:.4f}"
+        # )
 
         # save videos
         if args.save_videos:
@@ -541,19 +546,11 @@ if __name__ == "__main__":
             os.makedirs(save_root, exist_ok=True)
 
             masked_frame_for_save = []
-            green_masked_frame_for_save = []
             for i in range(len(blurry_frames[0])):
                 img = np.array(
                     ((blurry_frames[0][i] + 1) / 2).cpu().permute(1, 2, 0) * 255
                 )
                 masked_frame_for_save.append(img.astype(np.uint8))
-                mask_ = np.array(binary_masks[0][i].cpu().permute(1, 2, 0))
-                green = np.zeros([h, w, 3])
-                green[:, :, 1] = 255
-                alpha = 0.6
-                fuse_img = (1 - alpha) * img + alpha * green
-                fuse_img = mask_ * fuse_img + (1 - mask_) * img
-                green_masked_frame_for_save.append(fuse_img.astype(np.uint8))
 
             imageio.mimwrite(
                 os.path.join(save_root, "masked_in.mp4"),
@@ -561,12 +558,7 @@ if __name__ == "__main__":
                 fps=10,
                 quality=7,
             )
-            imageio.mimwrite(
-                os.path.join(save_root, "green_masked_in.mp4"),
-                green_masked_frame_for_save,
-                fps=10,
-                quality=7,
-            )
+
             imageio.mimwrite(
                 os.path.join(save_root, "inpaint_out.mp4"),
                 comp_frames,
@@ -574,38 +566,39 @@ if __name__ == "__main__":
                 quality=7,
             )
 
-            pbar.update(1)
             pbar.set_description(f"Videos saved.")
-            # print(f"Results are saved in {save_root}")
             torch.cuda.empty_cache()
 
+        ###########################################
         # compute metrics
+        ###########################################
         pbar.set_description(f"Computing metrics for {video_name}")
 
-        gt_dir = os.path.join(args.input, "gt_resized")
+        gt_dir = os.path.join(args.input, "gt")
         gt_frames = get_gt_frames(gt_dir, video_name)
 
-        psnr_list, ssim_list = [], []
+        psnr_list, ssim_list, lpips_list = [], [], []
         for comp_frame, gt_frame in tqdm(zip(comp_frames, gt_frames), leave=False):
 
             psnr, ssim = calc_psnr_and_ssim(comp_frame, gt_frame)
+            lpips = 0
             psnr_list.append(psnr)
             ssim_list.append(ssim)
+            lpips_list.append(lpips)
 
         results_dict["PSNR"].append(np.mean(psnr_list))
         results_dict["SSIM"].append(np.mean(ssim_list))
+        results_dict["LPIPS"].append(np.mean(lpips_list))
 
         pbar.update(1)
         pbar.write(
-            f"{video_name} PSNR: {np.mean(psnr_list):.2f}, SSIM: {np.mean(ssim_list):.4f}"
+            f"{video_name} PSNR: {np.mean(psnr_list):.2f}, SSIM: {np.mean(ssim_list):.4f}, LPIPS: {np.mean(lpips_list):.4f}, Time: {avg_runtime:.4f}"
         )
 
         msg = (
-            # f"{video_name} PSNR: {np.mean(psnr_list):.2f}, SSIM: {np.mean(ssim_list):.4f}"
-            # + "\n"
             "{:<15s} -- {}".format(
                 f"{video_name}",
-                f"PSNR: {np.mean(psnr_list):.2f}, SSIM: {np.mean(ssim_list):.4f}",
+                f"PSNR: {np.mean(psnr_list):.2f}, SSIM: {np.mean(ssim_list):.4f}, LPIPS: {np.mean(lpips_list):.4f}, Time: {avg_runtime:.4f}",
             )
             + "\n"
         )
@@ -614,9 +607,10 @@ if __name__ == "__main__":
     msg = (
         "\n"
         + "{:<15s} -- {}".format(
-            "Average", {k: round(np.mean(results_dict[k]), 3) for k in metrics}
+            "Average", {k: round(np.mean(results_dict[k]), 4) for k in metrics}
         )
         + "\n\n"
+        + str(np.mean(results_dict["Times"]))
     )
 
     print(msg, end="")

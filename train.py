@@ -32,8 +32,6 @@ def main(config):
     train_args = config["trainer"]
     youtube_vos_train = TrainDataset(config["dl_config"], config["youtube-vos"])
     bvidvc_train = TrainDataset(config["dl_config"], config["bvidvc"])
-    # low_light_10_train = TrainDataset(config["dl_config"], config["low_light_10"])
-    # valid_set = TestDataset(config)
     datasets_train = [youtube_vos_train, bvidvc_train]
     train_sampler = Sampler(datasets_train, iter=True)
 
@@ -72,15 +70,8 @@ def main(config):
     model = DepthPainter().to(config["device"])
     print(config["net"], "network created")
 
-    # teacher = ProPainter()
-    # teacher.load_state_dict(torch.load("./weights/ProPainter.pth"))
-    # for p in teacher.parameters():
-    #     p.requires_grad = False
-    # teacher.to(config["device"])
-    # teacher.eval()
-    teacher = None
 
-    trainer = core.trainer.Trainer(config, prefetcher, model, teacher)
+    trainer = core.trainer.Trainer(config, prefetcher, model)
     trainer.train()
 
 

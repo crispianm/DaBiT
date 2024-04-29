@@ -360,6 +360,7 @@ class DepthPainter(BaseNetwork):
         )
         self.upsample2 = PixelShufflePack(self.mid_channels, 64, 2, upsample_kernel=3)
         self.upsample3 = PixelShufflePack(64, 64, 2, upsample_kernel=3)
+        # self.upsample4 = PixelShufflePack(64, 64, 2, upsample_kernel=3)
         self.conv_hr = nn.Conv2d(64, 64, 3, 1, 1)
         self.conv_last = nn.Conv2d(64, 3, 3, 1, 1)
         self.img_upsample = nn.Upsample(
@@ -428,6 +429,7 @@ class DepthPainter(BaseNetwork):
             hr = self.lrelu(self.upsample1(hr))
             hr = self.lrelu(self.upsample2(hr))
             hr = self.lrelu(self.upsample3(hr))
+            # hr = self.lrelu(self.upsample4(hr))
             hr = self.lrelu(self.conv_hr(hr))
             hr = self.conv_last(hr)
             hr += self.img_upsample(lqs[:, i, :, :, :])

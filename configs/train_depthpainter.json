@@ -51,13 +51,12 @@
         "num_workers": 0,
         "num_prefetch_queue": 8,
         "log_freq": 10,
-        "save_freq": 1000,
+        "save_freq": 5000,
         "iterations": 700e3,
         "scheduler": {
             "type": "MultiStepLR",
             "milestones": [
-                120100,
-                300000
+                500000
             ],
             "gamma": 0.5
         }

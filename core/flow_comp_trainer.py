@@ -230,7 +230,7 @@ class FlowCompTrainer:
                 :,
                 :l_t,
             ]
-            binary_masks = (blur_maps > 0.1).float()
+            binary_masks = (blur_maps > torch.min(blur_maps)).float()
             local_masks = binary_masks[
                 :,
                 :l_t,
@@ -279,13 +279,13 @@ class FlowCompTrainer:
 
             # write image to tensorboard
             if self.iteration % 100 == 0 and self.writer is not None:
-                t = 5
+                t = 0
                 # forward to cpu
-                gt_flows_forward_cpu = flow_to_image(gt_flows_bi[0][0]).cpu()
+                gt_flows_forward_cpu = flow_to_image(gt_flows_bi[0][t]).cpu()
                 masked_flows_forward_cpu = (
                     gt_flows_forward_cpu[t] * (1 - local_masks[0][t].cpu())
                 ).to(gt_flows_forward_cpu)
-                pred_flows_forward_cpu = flow_to_image(pred_flows_bi[0][0]).cpu()
+                pred_flows_forward_cpu = flow_to_image(pred_flows_bi[0][t]).cpu()
 
                 flow_results = torch.cat(
                     [
@@ -300,11 +300,11 @@ class FlowCompTrainer:
                 )
 
                 # backward to cpu
-                gt_flows_backward_cpu = flow_to_image(gt_flows_bi[1][0]).cpu()
+                gt_flows_backward_cpu = flow_to_image(gt_flows_bi[1][t]).cpu()
                 masked_flows_backward_cpu = (
                     gt_flows_backward_cpu[t] * (1 - local_masks[0][t + 1].cpu())
                 ).to(gt_flows_backward_cpu)
-                pred_flows_backward_cpu = flow_to_image(pred_flows_bi[1][0]).cpu()
+                pred_flows_backward_cpu = flow_to_image(pred_flows_bi[1][t]).cpu()
 
                 flow_results = torch.cat(
                     [
