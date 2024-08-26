@@ -22,8 +22,9 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 def main(config):
 
     if torch.cuda.is_available():
-        config["device"] = torch.device("cuda")
+        config["device"] = "cuda"
         print("Using ", torch.cuda.get_device_name(0))
+        torch.set_default_device(config["device"])
     else:
         config["device"] = "cpu"
         print("No GPU found, using CPU instead")
@@ -32,20 +33,19 @@ def main(config):
     train_args = config["trainer"]
     youtube_vos_train = TrainDataset(config["dl_config"], config["youtube-vos"])
     bvidvc_train = TrainDataset(config["dl_config"], config["bvidvc"])
-    datasets_train = [youtube_vos_train, bvidvc_train]
     train_sampler = Sampler(datasets_train, iter=True)
 
     # DataLoaders
     train_loader = DataLoader(
         dataset=train_sampler,
         batch_size=config["trainer"]["batch_size"],
-        shuffle=True,
+        shuffle=False,
         num_workers=0,
     )
     dataloader_args = dict(
         dataset=train_sampler,
         batch_size=train_args["batch_size"],
-        shuffle=True,
+        shuffle=False,
         num_workers=train_args["num_workers"],
         drop_last=True,
     )
@@ -69,7 +69,6 @@ def main(config):
     # Model and Trainer
     model = DepthPainter().to(config["device"])
     print(config["net"], "network created")
-
 
     trainer = core.trainer.Trainer(config, prefetcher, model)
     trainer.train()

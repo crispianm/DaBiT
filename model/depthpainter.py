@@ -475,39 +475,39 @@ class DepthPainter(BaseNetwork):
             )
         )
         _, c, h, w = enc_feat.size()
-        local_feat = enc_feat.view(b, t, c, h, w)[:, :l_t, ...]
-        ref_feat = enc_feat.view(b, t, c, h, w)[:, l_t:, ...]
+        # local_feat = enc_feat.view(b, t, c, h, w)[:, :l_t, ...]
+        # ref_feat = enc_feat.view(b, t, c, h, w)[:, l_t:, ...]
         fold_feat_size = (h, w)
 
-        # flow and mask
-        ds_flows_f = (
-            F.interpolate(
-                flows[0].view(-1, 2, h_in, w_in),
-                scale_factor=0.25,
-                mode="bilinear",
-                align_corners=False,
-            ).view(b, l_t - 1, 2, h, w)
-            / 4.0
-        )
-        ds_flows_b = (
-            F.interpolate(
-                flows[1].view(-1, 2, h_in, w_in),
-                scale_factor=0.25,
-                mode="bilinear",
-                align_corners=False,
-            ).view(b, l_t - 1, 2, h, w)
-            / 4.0
-        )
+        # # flow and mask
+        # ds_flows_f = (
+        #     F.interpolate(
+        #         flows[0].view(-1, 2, h_in, w_in),
+        #         scale_factor=0.25,
+        #         mode="bilinear",
+        #         align_corners=False,
+        #     ).view(b, l_t - 1, 2, h, w)
+        #     / 4.0
+        # )
+        # ds_flows_b = (
+        #     F.interpolate(
+        #         flows[1].view(-1, 2, h_in, w_in),
+        #         scale_factor=0.25,
+        #         mode="bilinear",
+        #         align_corners=False,
+        #     ).view(b, l_t - 1, 2, h, w)
+        #     / 4.0
+        # )
         ds_blur_maps = F.interpolate(
             blur_maps.reshape(-1, 1, h_in, w_in), scale_factor=0.25, mode="nearest"
         ).view(b, t, 1, h, w)
         ds_blur_maps_local = ds_blur_maps[:, :l_t]
 
-        ds_bin_masks_local = F.interpolate(
-            bin_masks[:, :l_t].reshape(-1, 1, h_in, w_in),
-            scale_factor=0.25,
-            mode="nearest",
-        ).view(b, l_t, 1, h, w)
+        # ds_bin_masks_local = F.interpolate(
+        #     bin_masks[:, :l_t].reshape(-1, 1, h_in, w_in),
+        #     scale_factor=0.25,
+        #     mode="nearest",
+        # ).view(b, l_t, 1, h, w)
 
         if self.training:
             mask_pool_l = self.max_pool(ds_blur_maps.view(-1, 1, h, w))
@@ -520,11 +520,11 @@ class DepthPainter(BaseNetwork):
                 b, l_t, 1, mask_pool_l.size(-2), mask_pool_l.size(-1)
             )
 
-        prop_mask_in = torch.cat([ds_blur_maps_local, ds_bin_masks_local], dim=2)
-        _, _, local_feat, _ = self.feat_prop_module(
-            local_feat, ds_flows_f, ds_flows_b, prop_mask_in, interpolation
-        )
-        enc_feat = torch.cat((local_feat, ref_feat), dim=1)
+        # prop_mask_in = torch.cat([ds_blur_maps_local, ds_bin_masks_local], dim=2)
+        # _, _, local_feat, _ = self.feat_prop_module(
+        #     local_feat, ds_flows_f, ds_flows_b, prop_mask_in, interpolation
+        # )
+        # enc_feat = torch.cat((local_feat, ref_feat), dim=1)
 
         trans_feat = self.ss(enc_feat.view(-1, c, h, w), b, fold_feat_size)
         mask_pool_l = rearrange(mask_pool_l, "b t c h w -> b t h w c").contiguous()

@@ -13,6 +13,9 @@ from core.utils import (
     GroupRandomHorizontalDepthFlip,
     blur_with_depth,
     get_random_focus_depths,
+    get_blur_map,
+    get_wavelet,
+    normalize,
 )
 
 
@@ -70,17 +73,17 @@ class TrainDataset(torch.utils.data.Dataset):
         remain_idx = list(set(complete_idx_set) - set(local_idx))
         ref_index = sorted(random.sample(remain_idx, num_ref_frame))
 
-        return local_idx + ref_index
+        return local_idx, ref_index
 
     def __getitem__(self, index):
         video_name = self.video_names[index]
 
-        if self.args["use_blur_masks"]:
-            window, step, focal_point = get_random_focus_depths()
-            max_blur = random.randint(3, 11)
+        window, step, focal_point = get_random_focus_depths()
+        max_blur = random.randint(3, 11)
+        sigma = random.randint(1, 5)
 
         # create sample index
-        selected_index = self._sample_index(
+        selected_local_index, selected_ref_index = self._sample_index(
             self.video_dict[video_name], self.num_local_frames, self.num_ref_frames
         )
 
@@ -91,40 +94,42 @@ class TrainDataset(torch.utils.data.Dataset):
         depths = []
         flows_f, flows_b = [], []
 
-        for idx in selected_index:
+        for idx in selected_local_index:
+
+            # Load GT Image and resized image
             frame_list = self.frame_dict[video_name]
             img_path = os.path.join(self.video_root, video_name, frame_list[idx])
-            img = io.read_image(img_path)
+            img = io.read_image(img_path) / 255.0
             img = transforms.Resize(size=(self.ori_h, self.ori_w), antialias=None)(img)
             frames.append(img)
             img = transforms.Resize(size=(self.h, self.w), antialias=None)(img)
-            # print(img.shape)
 
-            if self.load_depth:
-                depth_path = os.path.join(
-                    self.depth_root, video_name, frame_list[idx][:-4] + "_depth.png"
-                )
-                depth = io.read_image(depth_path)[0].unsqueeze(0)
-                depth = transforms.Resize(size=(self.h, self.w), antialias=None)(depth)
-                depths.append(depth)
-            else:
-                raise ValueError("Depth not loaded")
+            # Load Depth Image and resize
+            depth_path = os.path.join(
+                self.depth_root, video_name, frame_list[idx][:-4] + "_depth.png"
+            )
+            depth = io.read_image(depth_path)[0].unsqueeze(0) / 255.0
+            depth = transforms.Resize(size=(self.h, self.w), antialias=None)(depth)
+            depths.append(depth)
 
-            if self.args["use_blur_masks"]:
-                blurred_image, blur_mask = blur_with_depth(
-                    img,
-                    depth[0],
-                    1,
-                    max_blur,
-                    focal_point,
-                    100,
-                    sigma=5,
-                    num_layers=10,
-                )
-                focal_point += step
+            # Create Blurred Image
+            blurred_img = blur_with_depth(
+                img * 255,
+                depth[0] * 255,
+                min_blur=1,
+                max_blur=max_blur,
+                focal_point=focal_point,
+                focus_range=window,
+                sigma=sigma,
+                num_layers=10,
+            )
+            blurred_frames.append(blurred_img)
+            focal_point += step
 
-                blurred_frames.append(blurred_image)
-                masks.append(blur_mask)
+            # Create Mask
+            blurred_wavelet = get_wavelet(blurred_img)
+            blur_map = get_blur_map(blurred_wavelet, depth)
+            masks.append(blur_map)
 
             if len(frames) <= self.num_local_frames - 1 and self.load_flow:
                 current_n = frame_list[idx][:-4]
@@ -166,42 +171,36 @@ class TrainDataset(torch.utils.data.Dataset):
             frames, blurred_frames, depths, masks, flows_f, flows_b
         )
 
-        # normalize to tensors
-        frame_tensors = (torch.stack(frames) / 255.0 * 2.0) - 1.0
-        blurred_frame_tensors = (torch.stack(blurred_frames) / 255.0 * 2.0) - 1.0
-        depth_tensors = torch.stack(depths) / 255.0
-        masks = torch.stack(masks)
-        mask_tensors = (masks - torch.min(masks)) * (
-            1.0 / (torch.max(masks) - torch.min(masks))
+        # Normalize to Tensors
+        gt_tensors = normalize(torch.stack(frames))
+        input_tensors = normalize(torch.stack(blurred_frames))
+        depth_tensors = normalize(torch.stack(depths))
+        mask_tensors = normalize(torch.stack(masks))
+        # mask_tensors = (masks - torch.min(masks)) * (
+        #     1.0 / (torch.max(masks) - torch.min(masks))
+        # )
+        flows_f = normalize(
+            torch.from_numpy(np.stack(flows_f, axis=-1))
+            .permute(3, 2, 0, 1)
+            .contiguous()
+            .float()
+        )
+        flows_b = normalize(
+            torch.from_numpy(np.stack(flows_b, axis=-1))
+            .permute(3, 2, 0, 1)
+            .contiguous()
+            .float()
         )
 
-        if self.load_flow:
-            flows_f = np.stack(flows_f, axis=-1)  # H W 2 T-1
-            flows_b = np.stack(flows_b, axis=-1)
-            flows_f = torch.from_numpy(flows_f).permute(3, 2, 0, 1).contiguous().float()
-            flows_b = torch.from_numpy(flows_b).permute(3, 2, 0, 1).contiguous().float()
-
-        # img [-1,1] mask [0,1]
-        if self.load_flow:
-            return (
-                frame_tensors,
-                blurred_frame_tensors,
-                depth_tensors,
-                mask_tensors,
-                flows_f,
-                flows_b,
-                video_name,
-            )
-        else:
-            return (
-                frame_tensors,
-                blurred_frame_tensors,
-                depth_tensors,
-                mask_tensors,
-                "None",
-                "None",
-                video_name,
-            )
+        return (
+            gt_tensors,
+            input_tensors,
+            depth_tensors,
+            mask_tensors,
+            flows_f,
+            flows_b,
+            video_name,
+        )
 
 
 class TestDataset(torch.utils.data.Dataset):

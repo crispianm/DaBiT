@@ -6,23 +6,75 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
+import pytorch_warmup as warmup
 from torch.utils.tensorboard import SummaryWriter
 
-from core.lr_scheduler import MultiStepRestartLR, CosineAnnealingRestartLR
 from core.loss import AdversarialLoss, PerceptualLoss, LPIPSLoss, CharbonnierLoss
 from core.dataset import *
 
 from model.modules.flow_comp_raft import RAFT_bi, FlowLoss, EdgeLoss
 from model.recurrent_flow_completion import RecurrentFlowCompleteNet
 
-
+from core.metrics import calc_psnr_and_ssim
 from RAFT.utils.flow_viz_pt import flow_to_image
+
+
+def read_from_videos(root_dir, video_name):
+    """
+    Read blurry_frames, depths, and masks from the specified root directory.
+
+    Args:
+        root_dir (str): The root directory containing the frames, depths, and masks folders.
+
+    Returns:
+        tuple: A tuple containing the following elements:
+            - blurry_frames (torch.Tensor): A tensor containing the blurry_frames read from the frames folder.
+            - depths (torch.Tensor): A tensor containing the depths read from the depths folder.
+            - masks (torch.Tensor): A tensor containing the masks read from the masks folder.
+            - fps (None): The frames per second (fps) of the video (currently set to None).
+            - video_name (str): The name of the video (extracted from the root directory).
+
+    """
+
+    root_dir = os.path.join(root_dir, video_name)
+
+    frame_path = os.path.join(root_dir, "frames")
+    blurry_frames = []
+    fr_lst = sorted(os.listdir(frame_path))
+    for fr in fr_lst:
+        blurry_frame = torchvision.io.read_image(os.path.join(frame_path, fr))
+        blurry_frames.append(blurry_frame)
+
+    depth_path = os.path.join(root_dir, "depths")
+    depths = []
+    depth_lst = sorted(os.listdir(depth_path))
+    for fr in depth_lst:
+        depth = torchvision.io.read_image(os.path.join(depth_path, fr))
+        depths.append(depth)
+
+    mask_path = os.path.join(root_dir, "masks")
+    # mask_path = os.path.join(root_dir, "wavelet_blur_maps")
+    masks = []
+    mask_lst = sorted(os.listdir(mask_path))
+    for fr in mask_lst:
+        mask = torchvision.io.read_image(os.path.join(mask_path, fr))
+        masks.append(mask)
+
+    fps = None
+
+    return (
+        torch.stack(blurry_frames),
+        torch.stack(depths),
+        torch.stack(masks),
+        fps,
+    )
 
 
 class Trainer:
     def __init__(self, config, prefetcher, model, start_epoch=0):
 
         self.l1_loss = nn.L1Loss()
+        self.l2_loss = nn.MSELoss()
         self.charbonnier_loss = CharbonnierLoss()
 
         self.config = config
@@ -38,19 +90,21 @@ class Trainer:
         self.prefetcher = prefetcher
 
         # Initialize RAFT
-        self.fix_raft = RAFT_bi(device=self.device)
-        self.fix_flow_complete = RecurrentFlowCompleteNet(
-            "C:/Users/wg19671/repos/DepthPainter/experiments_model/recurrent_flow_completion_train_flowcomp/gen_108000.pth"
-        )
-        for p in self.fix_flow_complete.parameters():
-            p.requires_grad = False
-        self.fix_flow_complete.to(self.device)
-        self.fix_flow_complete.eval()
+        self.raft = RAFT_bi(device=self.device)
+        # self.fix_flow_complete = RecurrentFlowCompleteNet(
+        #     "C:/Users/wg19671/repos/DepthPainter/experiments_model/recurrent_flow_completion_train_flowcomp/gen_108000.pth"
+        # )
+        # for p in self.fix_flow_complete.parameters():
+        #     p.requires_grad = False
+        # self.fix_flow_complete.to(self.device)
+        # self.fix_flow_complete.eval()
 
         self.interp_mode = self.config["interp_mode"]
         # setup optimizers and schedulers
         self.setup_optimizers()
         self.setup_schedulers()
+        self.warmup_scheduler = warmup.UntunedLinearWarmup(self.optimizer)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=True)
         self.load()
 
         # Set up tensorboard
@@ -71,46 +125,32 @@ class Trainer:
             {"params": backbone_params, "lr": self.config["trainer"]["lr"]},
         ]
 
-        self.optimizer = torch.optim.Adam(
+        self.optimizer = torch.optim.AdamW(
             optim_params,
-            betas=(self.config["trainer"]["beta1"], self.config["trainer"]["beta2"]),
         )
 
     def setup_schedulers(self):
         """Set up schedulers."""
-        scheduler_opt = self.config["trainer"]["scheduler"]
-        scheduler_type = scheduler_opt.pop("type")
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode="max",
+            factor=0.5,
+            patience=5,
+            threshold=0.01,  # metric to be used is psnr
+            threshold_mode="abs",
+            verbose=True,
+        )
 
-        if scheduler_type in ["MultiStepLR", "MultiStepRestartLR"]:
-            self.scheG = MultiStepRestartLR(
-                self.optimizer,
-                milestones=scheduler_opt["milestones"],
-                gamma=scheduler_opt["gamma"],
-            )
-
-        elif scheduler_type == "CosineAnnealingRestartLR":
-            self.scheG = CosineAnnealingRestartLR(
-                self.optimizer,
-                periods=scheduler_opt["periods"],
-                restart_weights=scheduler_opt["restart_weights"],
-                eta_min=scheduler_opt["eta_min"],
-            )
-
-        else:
-            raise NotImplementedError(
-                f"Scheduler {scheduler_type} is not implemented yet."
-            )
-
-    def update_learning_rate(self):
-        """Update learning rate."""
-        self.scheG.step()
 
     def get_lr(self):
         """Get current learning rate."""
         return self.optimizer.param_groups[0]["lr"]
 
     def add_summary(self, writer, name, val):
-        """Add tensorboard summary."""
+        """
+        Add tensorboard summary.
+
+        """
         if name not in self.summary:
             self.summary[name] = 0
         self.summary[name] += val
@@ -150,7 +190,8 @@ class Trainer:
             self.model.load_state_dict(model_data)
 
             data_opt = torch.load(opt_path, map_location=self.device)
-            self.optimizer.load_state_dict(data_opt["optimG"])
+            self.optimizer.load_state_dict(data_opt["optimizer"])
+            self.scaler.load_state_dict(data_opt["scaler"])
 
             self.epoch = data_opt["epoch"]
             self.iteration = data_opt["iteration"]
@@ -164,8 +205,8 @@ class Trainer:
 
                 if opt_path is not None:
                     data_opt = torch.load(opt_path, map_location=self.device)
-                    self.optimizer.load_state_dict(data_opt["optimG"])
-                    self.scheG.load_state_dict(data_opt["scheG"])
+                    self.optimizer.load_state_dict(data_opt["optimizer"])
+                    self.scheduler.load_state_dict(data_opt["scheduler"])
 
             else:
                 print(
@@ -188,8 +229,9 @@ class Trainer:
             {
                 "epoch": self.epoch,
                 "iteration": self.iteration,
-                "optimG": self.optimizer.state_dict(),
-                "scheG": self.scheG.state_dict(),
+                "optimizer": self.optimizer.state_dict(),
+                "scheduler": self.scheduler.state_dict(),
+                "scaler": self.scaler.state_dict(),
             },
             opt_path,
         )
@@ -204,8 +246,10 @@ class Trainer:
 
         while True:
             self.epoch += 1
+            pbar.set_postfix(epoch=self.epoch)
             self.prefetcher.reset()
             self._train_epoch(pbar)
+            self.validate()
             if self.iteration > self.train_args["iterations"]:
                 break
         print("\nTraining complete.")
@@ -218,147 +262,144 @@ class Trainer:
         device = self.device
         train_data = self.prefetcher.next()
         while train_data is not None:
-
-            self.iteration += 1
-            frames, blurry_frames, depths, blur_maps, flows_f, flows_b, _ = train_data
-            frames, blurry_frames, depths, blur_maps = (
-                frames.to(device),
-                blurry_frames.to(device),
-                depths.to(device).float(),
-                blur_maps.to(device).float(),
-            )
-            
-            # frames: [b, t, c, ori_h, ori_w]
-            # blurry_frames: [b, t, c, h, w]
-            # masks: [b, t, 1, h, w]
-            # depths: [b, t, 1, h, w]
-
-            l_t = self.num_local_frames
-            b, t, c, ori_h, ori_w = frames.size()
-            b, t, c, h, w = blurry_frames.size()
-
-            resized_frames = torch.stack(
-                [
-                    transforms.Resize(size=(h, w), antialias=None)(batch)
-                    for batch in frames
-                ]
-            )
-            gt_local_frames = resized_frames[
-                :,
-                :l_t,
-            ]
-            binary_masks = (blur_maps > torch.min(blur_maps)).float()
-            local_masks = binary_masks[
-                :,
-                :l_t,
-            ].contiguous()
-
-            masked_local_frames = blurry_frames[
-                :,
-                :l_t,
-            ]
-
-            # Get GT Optical Flow
-            if flows_f[0] == "None" or flows_b[0] == "None":
-                gt_flows_bi = self.fix_raft(gt_local_frames)
-            else:
-                gt_flows_bi = (flows_f.to(device), flows_b.to(device))
-
-            # ---- Complete Flow ----
-            pred_flows_bi, _ = self.fix_flow_complete.forward_bidirect_flow(
-                blurry_frames[:, :l_t], gt_flows_bi, local_masks
-            )
-            pred_flows_bi = self.fix_flow_complete.combine_flow(
-                gt_flows_bi, pred_flows_bi, local_masks
-            )
-
-            # ---- Image Propagation ----
-            prop_imgs, updated_local_masks = self.model.img_propagation(
-                masked_local_frames,
-                pred_flows_bi,
-                local_masks,
-                interpolation=self.interp_mode,
-            )
-            updated_binary_masks = binary_masks.clone()
-            updated_binary_masks[
-                :,
-                :l_t,
-            ] = updated_local_masks.view(b, l_t, 1, h, w)
-            updated_frames = blurry_frames.clone()
-            prop_local_frames = (
-                gt_local_frames * (1 - local_masks)
-                + prop_imgs.view(b, l_t, 3, h, w) * local_masks
-            )
-            updated_frames[
-                :,
-                :l_t,
-            ] = prop_local_frames
-
-            # ---- Feature Propagation + Transformer + Super Resolution ----
-            ori_pred_imgs = self.model(
-                updated_frames,
-                depths,
-                pred_flows_bi,
-                blur_maps,
-                updated_binary_masks,
-                l_t,
-            )
-            pred_imgs = torch.stack(
-                [
-                    transforms.Resize(size=(h, w), antialias=None)(batch)
-                    for batch in ori_pred_imgs
-                ]
-            )
-            pred_imgs = pred_imgs.view(b, -1, c, h, w)
-
-            # get the local frames
-            pred_local_frames = pred_imgs[
-                :,
-                :l_t,
-            ]
-
-            # ---- Loss Calculation ----
-            self.optimizer.zero_grad()
-
-            # Student l1 loss
-            hole_loss = self.l1_loss(
-                pred_imgs * binary_masks, resized_frames * binary_masks
-            )
-            hole_loss = (
-                hole_loss
-                / torch.mean(binary_masks)
-                * self.config["losses"]["hole_weight"]
-            )
-            valid_loss = self.l1_loss(
-                pred_imgs * (1 - binary_masks), resized_frames * (1 - binary_masks)
-            )
-            valid_loss = (
-                valid_loss
-                / torch.mean(1 - binary_masks)
-                * self.config["losses"]["valid_weight"]
-            )
-            self.add_summary(self.writer, "loss/hole_loss", hole_loss.item())
-            self.add_summary(self.writer, "loss/valid_loss", valid_loss.item())
-
-            # Super Resolution Loss
-            if self.config["losses"]["sr_weight"] > 0:
-                sr_loss = (
-                    self.charbonnier_loss(ori_pred_imgs, frames)
-                    * self.config["losses"]["sr_weight"]
+            with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                self.iteration += 1
+                frames, blurry_frames, depths, blur_maps, flows_f, flows_b, _ = (
+                    train_data
                 )
-                self.add_summary(self.writer, "loss/sr_loss", sr_loss.item())
-            else:
-                sr_loss = 0
+                frames, blurry_frames, depths, blur_maps = (
+                    frames.to(device),
+                    blurry_frames.to(device),
+                    depths.to(device).float(),
+                    blur_maps.to(device).float(),
+                )
 
-            total_loss = hole_loss + valid_loss + sr_loss
-            self.add_summary(self.writer, "loss/z_total_loss", total_loss.item())
-            total_loss.backward()
-            self.optimizer.step()
+                # frames: [b, t, c, ori_h, ori_w]
+                # blurry_frames: [b, t, c, h, w]
+                # masks: [b, t, 1, h, w]
+                # depths: [b, t, 1, h, w]
 
-            self.update_learning_rate()
+                l_t = self.num_local_frames
+                b, t, c, ori_h, ori_w = frames.size()
+                b, t, c, h, w = blurry_frames.size()
+
+                resized_frames = torch.stack(
+                    [
+                        transforms.Resize(size=(h, w), antialias=None)(batch)
+                        for batch in frames
+                    ]
+                )
+                gt_local_frames = resized_frames[
+                    :,
+                    :l_t,
+                ]
+                binary_masks = (blur_maps > torch.min(blur_maps)).float()
+                local_masks = binary_masks[
+                    :,
+                    :l_t,
+                ].contiguous()
+
+                masked_local_frames = blurry_frames[
+                    :,
+                    :l_t,
+                ]
+
+                # Get GT Optical Flow
+                gt_flows_bi = (flows_f.to(device), flows_b.to(device))
+                blurry_flows_bi = self.raft(masked_local_frames)
+
+                # ---- Image Propagation ----
+                prop_imgs, updated_local_masks = self.model.img_propagation(
+                    masked_local_frames,
+                    blurry_flows_bi,
+                    local_masks,
+                    interpolation=self.interp_mode,
+                )
+                updated_binary_masks = binary_masks.clone()
+                updated_binary_masks[
+                    :,
+                    :l_t,
+                ] = updated_local_masks.view(b, l_t, 1, h, w)
+                updated_frames = blurry_frames.clone()
+                prop_local_frames = (
+                    gt_local_frames * (1 - local_masks)
+                    + prop_imgs.view(b, l_t, 3, h, w) * local_masks
+                )
+                updated_frames[
+                    :,
+                    :l_t,
+                ] = prop_local_frames
+
+                # ---- Feature Propagation + Transformer + Super Resolution ----
+                ori_pred_imgs = self.model(
+                    updated_frames,
+                    depths,
+                    blurry_flows_bi,
+                    blur_maps,
+                    updated_binary_masks,
+                    l_t,
+                )
+                pred_imgs = torch.stack(
+                    [
+                        transforms.Resize(size=(h, w), antialias=None)(batch)
+                        for batch in ori_pred_imgs
+                    ]
+                )
+                pred_imgs = pred_imgs.view(b, -1, c, h, w)
+
+                # get the local frames
+                pred_local_frames = pred_imgs[
+                    :,
+                    :l_t,
+                ]
+
+                # ---- Loss Calculation ----
+
+                # Student l1 loss
+                # hole_loss = self.l1_loss(
+                #     pred_imgs * binary_masks, resized_frames * binary_masks
+                # )
+                # hole_loss = (
+                #     hole_loss
+                #     / torch.mean(binary_masks)
+                #     * self.config["losses"]["hole_weight"]
+                # )
+                # valid_loss = self.l1_loss(
+                #     pred_imgs * (1 - binary_masks), resized_frames * (1 - binary_masks)
+                # )
+                # valid_loss = (
+                #     valid_loss
+                #     / torch.mean(1 - binary_masks)
+                #     * self.config["losses"]["valid_weight"]
+                # )
+                # self.add_summary(self.writer, "loss/hole_loss", hole_loss.item())
+                # self.add_summary(self.writer, "loss/valid_loss", valid_loss.item())
+
+                # # Super Resolution Loss
+                # if self.config["losses"]["sr_weight"] > 0:
+                #     sr_loss = (
+                #         self.charbonnier_loss(ori_pred_imgs, frames)
+                #         * self.config["losses"]["sr_weight"]
+                #     )
+                #     self.add_summary(self.writer, "loss/sr_loss", sr_loss.item())
+                # else:
+                #     sr_loss = 0
+
+                # total_loss = sr_loss + hole_loss + valid_loss
+                total_loss = self.l1_loss(ori_pred_imgs, frames)
+                self.add_summary(self.writer, "loss/total_loss", total_loss.item())
+                self.add_summary(self.writer, "loss/learning_rate", self.get_lr())
+
+            self.scaler.scale(total_loss).backward()
+            self.scaler.step(self.optimizer)
+            # with self.warmup_scheduler.dampening():
+            self.scaler.update()
+            self.scheduler.step()
+            self.optimizer.zero_grad()
+            
 
             # write images to tensorboard
-            if self.iteration % 100 == 0:
+            if self.iteration % 250 == 0:
                 # img to cpu
                 gt_local_frames_cpu = (
                     (gt_local_frames.view(b, -1, 3, h, w) + 1) / 2.0
@@ -412,7 +453,7 @@ class Trainer:
                     gt_flows_forward_cpu[0] * (1 - local_masks[0][0].cpu())
                     + local_masks[0][0].cpu()
                 ).to(gt_flows_forward_cpu)
-                pred_flows_forward_cpu = flow_to_image(pred_flows_bi[0][0]).cpu()
+                pred_flows_forward_cpu = flow_to_image(blurry_flows_bi[0][0]).cpu()
 
                 flow_results = torch.cat(
                     [
@@ -456,3 +497,40 @@ class Trainer:
                 break
 
             train_data = self.prefetcher.next()
+
+
+    def validate(self):
+
+        self.valid_loader = "T:/ProPainter Datasets/davis/blur_tests"
+
+        self.model.eval()
+        psnr_list = []
+
+        pbar = tqdm(os.listdir(self.valid_loader))
+        for video_name in pbar:
+            blurry_frames, depths, blur_maps, fps = read_from_videos(self.valid_loader, video_name)
+
+            # Preprocess frames
+            blurry_frames = (blurry_frames / 255 * 2) - 1  # norm to -1, 1
+            blurry_frames = blurry_frames[:, :3, :, :]  # only use RGB channels
+            depths = depths[:, 0, :, :].unsqueeze(1) / 255.0  # norm to 0, 1
+            blur_maps = blur_maps[:, 0, :, :].unsqueeze(1) / 255.0  # norm to 0, 1
+
+            # Move to device (GPU)
+            blurry_frames, depths, blur_maps = (
+                blurry_frames.unsqueeze(0).to(self.device),
+                depths.unsqueeze(0).to(self.device),
+                blur_maps.unsqueeze(0).to(self.device),
+            )
+
+            binary_masks = (blur_maps > 0.1).float()
+
+            with torch.no_grad():
+                comp_frames = self.model(blurry_frames, depths, blur_maps, binary_masks)
+
+            # Compute PSNR
+            for comp_frame, gt_frame in zip(comp_frames, blurry_frames):
+                psnr, _ = calc_psnr_and_ssim(comp_frame.cpu().numpy(), gt_frame.cpu().numpy())
+                psnr_list.append(psnr)
+
+        return psnr_list
