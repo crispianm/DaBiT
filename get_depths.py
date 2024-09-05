@@ -1,17 +1,12 @@
 import argparse
-import cv2
 import numpy as np
 import os
 import torch
 import torch.nn.functional as F
-from torchvision.transforms import Compose
 from tqdm import tqdm
 
-from depth_anything.dpt import DepthAnything
-from depth_anything.util.transform import Resize, NormalizeImage, PrepareForNet
-
-
-import matplotlib.pyplot as plt
+from PIL import Image
+from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
 
 """
@@ -20,36 +15,36 @@ python get_depths.py -i "./data_in" -o "./data_out"
 
 """
 
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+# os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 
-def get_depth_estimate(filepath, transform, depth_model, device, color):
+def get_depth_estimate(filepath, image_processor, depth_model, device):
     # Transform input for midas
-
-    raw_image = cv2.imread(filepath)
-    image = cv2.cvtColor(raw_image, cv2.COLOR_BGR2RGB) / 255.0
-
-    h, w = image.shape[:2]
-
-    image = transform({"image": image})["image"]
-    image = torch.from_numpy(image).unsqueeze(0).to(device)
+    image = Image.open(filepath)
+    inputs = image_processor(images=image, return_tensors="pt").to(device)
 
     with torch.no_grad():
-        depth = depth_model(image)
+        outputs = depth_model(**inputs)
+        predicted_depth = outputs.predicted_depth
 
-    depth = F.interpolate(depth[None], (h, w), mode="bilinear", align_corners=False)[
-        0, 0
-    ]
-    depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
+    # interpolate to original size
+    prediction = F.interpolate(
+        predicted_depth.unsqueeze(1),
+        size=image.size[::-1],
+        mode="bicubic",
+        align_corners=False,
+    )
 
-    output = depth.cpu().numpy().astype(np.uint8)
-    color_output = cv2.applyColorMap(output, cv2.COLORMAP_INFERNO)
+    # visualize the prediction
+    output = prediction.squeeze().cpu().numpy()
+    formatted = (output * 255 / np.max(output)).astype("uint8")
+    depth = Image.fromarray(formatted)
 
-    return output, color_output
+    return depth
 
 
 def process_folder(
-    input_folder_path, output_folder_path, transform, depth_model, device, color
+    input_folder_path, output_folder_path, transform, depth_model, device
 ):
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
@@ -64,8 +59,8 @@ def process_folder(
                 print(f"{output_file_path} already exists, skipping.")
             else:
                 try:
-                    depth_estimate, depth_estimate_color = get_depth_estimate(
-                        input_file_path, transform, depth_model, device, color=color
+                    depth_estimate = get_depth_estimate(
+                        input_file_path, transform, depth_model, device
                     )
                 except Exception as e:
                     print(f"Error processing {input_file_path}: {e}")
@@ -74,10 +69,7 @@ def process_folder(
                     continue
 
                 print(f"Saving image {output_file_path}.")
-                if color == True:
-                    plt.imsave(output_file_path, depth_estimate_color, cmap="plasma")
-                else:
-                    plt.imsave(output_file_path, depth_estimate, cmap="binary")
+                depth_estimate.save(output_file_path)
 
         elif item.is_dir():
             # Recursively process subfolder
@@ -88,7 +80,6 @@ def process_folder(
                 transform,
                 depth_model,
                 device,
-                color=color,
             )
 
 
@@ -114,15 +105,6 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "-c",
-        "--color",
-        type=bool,
-        default=False,
-        # choices=[True, False],
-        help="Whether to output color images. (Default: False)",
-    )
-
-    parser.add_argument(
         "-d",
         "--device",
         type=str,
@@ -142,37 +124,20 @@ if __name__ == "__main__":
         device = torch.device("cuda")
         print("Using ", torch.cuda.get_device_name(0))
     else:
+        # use apple silicon if no cuda gpu available
+        print("No GPU found, using cpu instead")
         device = torch.device("cpu")
-        print("No GPU found, using CPU instead")
 
     # Load model
-    depth_model = (
-        DepthAnything.from_pretrained(
-            "LiheYoung/depth_anything_{}14".format(args.encoder)
-        )
-        .to(device)
-        .eval()
-    )
-    total_params = sum(param.numel() for param in depth_model.parameters())
-    print("Total parameters: {:.2f}M".format(total_params / 1e6))
+    depth_model = AutoModelForDepthEstimation.from_pretrained(
+        "depth-anything/Depth-Anything-V2-Small-hf"
+    ).to(device)
 
     # Define transforms for model
-    transform = Compose(
-        [
-            Resize(
-                width=518,
-                height=518,
-                resize_target=False,
-                keep_aspect_ratio=True,
-                ensure_multiple_of=14,
-                resize_method="lower_bound",
-                image_interpolation_method=cv2.INTER_CUBIC,
-            ),
-            NormalizeImage(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            PrepareForNet(),
-        ]
+    image_processor = AutoImageProcessor.from_pretrained(
+        "depth-anything/Depth-Anything-V2-Small-hf"
     )
 
     process_folder(
-        args.input, args.output, transform, depth_model, args.device, args.color
+        args.input, args.output, image_processor, depth_model, args.device
     )
