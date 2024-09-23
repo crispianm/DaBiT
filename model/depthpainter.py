@@ -19,7 +19,7 @@ from model.basicvsr_net import (
     ResidualBlocksWithInputConv,
 )
 from model.upsample import PixelShufflePack
-from mmcv.ops import ModulatedDeformConv2d, modulated_deform_conv2d
+# from mmcv.ops import ModulatedDeformConv2d, modulated_deform_conv2d
 
 from .misc import constant_init
 

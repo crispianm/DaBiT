@@ -6,8 +6,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from core.utils import to_tensors
-
 
 def calculate_epe(flow1, flow2):
     """Calculate End point errors."""

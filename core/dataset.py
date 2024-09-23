@@ -3,7 +3,7 @@ import json
 import random
 
 import numpy as np
-
+from PIL import Image
 import torch
 import torchvision.transforms as transforms
 import torchvision.io as io
@@ -24,31 +24,26 @@ class TrainDataset(torch.utils.data.Dataset):
         self.args = args
         self.depth_root = dataset["depth_root"]
         self.video_root = dataset["video_root"]
-        self.flow_root = dataset["flow_root"]
 
         self.num_local_frames = args["num_local_frames"]
         self.num_ref_frames = args["num_ref_frames"]
         self.ori_size = self.ori_w, self.ori_h = (args["w"], args["h"])
         self.w, self.h = self.ori_w // 2, self.ori_h // 2
 
-        self.load_flow = args["load_flow"]
-        if self.load_flow:
-            assert os.path.exists(self.flow_root)
-
         self.load_depth = args["load_depth"]
         if self.load_depth:
             assert os.path.exists(self.depth_root)
 
-        if dataset["name"] == "youtube-vos":
+        # if dataset["name"] == "youtube-vos":
 
-            json_path = os.path.join(
-                self.video_root.split("youtube-vos")[0], "youtube-vos/train.json"
-            )
-            with open(json_path, "r") as f:
-                self.video_train_dict = json.load(f)
-            self.video_names = sorted(list(self.video_train_dict.keys()))
-        else:
-            self.video_names = sorted(os.listdir(self.video_root))
+        #     json_path = os.path.join(
+        #         self.video_root.split("youtube-vos")[0], "youtube-vos/train.json"
+        #     )
+        #     with open(json_path, "r") as f:
+        #         self.video_train_dict = json.load(f)
+        #     self.video_names = sorted(list(self.video_train_dict.keys()))
+        # else:
+        self.video_names = sorted(os.listdir(self.video_root))
 
         self.video_dict = {}
         self.frame_dict = {}
@@ -92,7 +87,6 @@ class TrainDataset(torch.utils.data.Dataset):
         blurred_frames = []
         masks = []
         depths = []
-        flows_f, flows_b = [], []
 
         for idx in selected_local_index:
 
@@ -131,74 +125,36 @@ class TrainDataset(torch.utils.data.Dataset):
             blur_map = get_blur_map(blurred_wavelet, depth)
             masks.append(blur_map)
 
-            if len(frames) <= self.num_local_frames - 1 and self.load_flow:
-                current_n = frame_list[idx][:-4]
-                next_n = frame_list[idx + 1][:-4]
-                flow_f_path = os.path.join(
-                    self.flow_root, video_name, f"{current_n}_{next_n}_f.flo"
-                )
-                flow_b_path = os.path.join(
-                    self.flow_root, video_name, f"{next_n}_{current_n}_b.flo"
-                )
-                flow_f = flowread(flow_f_path, quantize=False)
-                flow_b = flowread(flow_b_path, quantize=False)
-                flow_f = resize_flow(flow_f, self.h, self.w)
-                flow_b = resize_flow(flow_b, self.h, self.w)
-                flows_f.append(flow_f)
-                flows_b.append(flow_b)
-
             if len(frames) == self.num_local_frames:  # random reverse
                 if random.random() < 0.5:
                     frames.reverse()
                     blurred_frames.reverse()
                     depths.reverse()
                     masks.reverse()
-                    if self.load_flow:
-                        flows_f.reverse()
-                        flows_b.reverse()
-                        flows_ = flows_f
-                        flows_f = flows_b
-                        flows_b = flows_
 
         (
             frames,
             blurred_frames,
             depths,
             masks,
-            flows_f,
-            flows_b,
         ) = GroupRandomHorizontalDepthFlip()(
-            frames, blurred_frames, depths, masks, flows_f, flows_b
+            frames, blurred_frames, depths, masks
         )
 
         # Normalize to Tensors
-        gt_tensors = normalize(torch.stack(frames))
-        input_tensors = normalize(torch.stack(blurred_frames))
-        depth_tensors = normalize(torch.stack(depths))
-        mask_tensors = normalize(torch.stack(masks))
+        gt_tensors = torch.stack(frames)
+        input_tensors = torch.stack(blurred_frames)
+        depth_tensors = torch.stack(depths)
+        mask_tensors = torch.stack(masks)
         # mask_tensors = (masks - torch.min(masks)) * (
         #     1.0 / (torch.max(masks) - torch.min(masks))
         # )
-        flows_f = normalize(
-            torch.from_numpy(np.stack(flows_f, axis=-1))
-            .permute(3, 2, 0, 1)
-            .contiguous()
-            .float()
-        )
-        flows_b = normalize(
-            torch.from_numpy(np.stack(flows_b, axis=-1))
-            .permute(3, 2, 0, 1)
-            .contiguous()
-            .float()
-        )
 
         return (
             gt_tensors,
             input_tensors,
             depth_tensors,
             mask_tensors,
-            flows_f,
-            flows_b,
             video_name,
         )
 
@@ -212,23 +168,23 @@ class TestDataset(torch.utils.data.Dataset):
         self.w, self.h = self.ori_w // 2, self.ori_h // 2
 
 
-def __getitem__(self, index):
+    def __getitem__(self, index):
 
-    video_name = self.dataset[index]
+        video_name = self.dataset[index]
 
-    frame_list = sorted(os.listdir(os.path.join(self.video_root, video_name)))
-    frame_list = [f for f in frame_list if f.endswith(".jpg")]
+        frame_list = sorted(os.listdir(os.path.join(self.video_root, video_name)))
+        frame_list = [f for f in frame_list if f.endswith(".jpg")]
 
-    frames = []
-    for f in frame_list:
-        img_path = os.path.join(self.video_root, video_name, f)
-        img = io.read_image(img_path)
-        img = transforms.Resize(size=(self.ori_h, self.ori_w), antialias=None)(img)
-        frames.append(img)
+        frames = []
+        for f in frame_list:
+            img_path = os.path.join(self.video_root, video_name, f)
+            img = io.read_image(img_path)
+            img = transforms.Resize(size=(self.ori_h, self.ori_w), antialias=None)(img)
+            frames.append(img)
 
-    frame_tensors = (torch.stack(frames) / 255.0 * 2.0) - 1.0
+        frame_tensors = (torch.stack(frames) / 255.0 * 2.0) - 1.0
 
-    return frame_tensors, video_name
+        return frame_tensors, video_name
 
 
 class Sampler(torch.utils.data.Dataset):

@@ -12,21 +12,18 @@
     },
     "youtube-vos": {
         "name": "youtube-vos",
-        "video_root": "T:/ProPainter Datasets/youtube-vos/frames",
-        "flow_root": "T:/ProPainter Datasets/youtube-vos/flows",
-        "depth_root": "T:/ProPainter Datasets/youtube-vos/depths"
+        "video_root": "/home/wg19671/Documents/youtube-vos/frames",
+        "depth_root": "/home/wg19671/Documents/youtube-vos/depths"
     },
     "bvidvc": {
         "name": "bvidvc",
-        "video_root": "T:/ProPainter Datasets/bvidvc/frames",
-        "flow_root": "T:/ProPainter Datasets/bvidvc/flows",
-        "depth_root": "T:/ProPainter Datasets/bvidvc/depths"
+        "video_root": "/home/wg19671/Documents/bvidvc/frames",
+        "depth_root": "/home/wg19671/Documents/bvidvc/depths"
     },
     "low_light_10": {
         "name": "low_light_10",
-        "video_root": "T:/ProPainter Datasets/low_light_10/frames",
-        "flow_root": "T:/ProPainter Datasets/low_light_10/flows",
-        "depth_root": "T:/ProPainter Datasets/low_light_10/depths"
+        "video_root": "T:/ProPainter Datasets/low_light_10/frames/",
+        "depth_root": "T:/ProPainter Datasets/low_light_10/depths/"
     },
     "losses": {
         "hole_weight": 1,
@@ -47,10 +44,10 @@
         "lr": 1e-4,
         "batch_size": 1,
         "num_workers": 0,
-        "num_prefetch_queue": 8,
+        "num_prefetch_queue": 16,
         "log_freq": 10,
-        "save_freq": 1000,
-        "iterations": 300e3,
+        "save_freq": 5000,
+        "iterations": 700e3,
         "scheduler": {
             "type": "CosineAnnealingLR"
         }

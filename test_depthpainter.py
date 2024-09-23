@@ -16,8 +16,8 @@ from model.modules.flow_comp_raft import RAFT_bi
 from model.recurrent_flow_completion import RecurrentFlowCompleteNet
 from model.depthpainter import DepthPainter
 
-from depth_anything.dpt import DepthAnything
-from depth_anything.util.transform import Resize, NormalizeImage, PrepareForNet
+# from depth_anything.dpt import DepthAnything
+# from depth_anything.util.transform import Resize, NormalizeImage, PrepareForNet
 
 
 #  read frames from video

@@ -48,7 +48,7 @@ def process_folder(
 ):
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
-    for item in os.scandir(input_folder_path):
+    for item in tqdm(os.scandir(input_folder_path), leave=False):
         if item.is_file():
             # Process file
             input_file_path = item.path
@@ -68,7 +68,7 @@ def process_folder(
                         f.write(f"Error processing {input_file_path}: {e}\n")
                     continue
 
-                print(f"Saving image {output_file_path}.")
+                # print(f"Saving image {output_file_path}.")
                 depth_estimate.save(output_file_path)
 
         elif item.is_dir():

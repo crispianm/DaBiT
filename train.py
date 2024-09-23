@@ -33,7 +33,8 @@ def main(config):
     train_args = config["trainer"]
     youtube_vos_train = TrainDataset(config["dl_config"], config["youtube-vos"])
     bvidvc_train = TrainDataset(config["dl_config"], config["bvidvc"])
-    train_sampler = Sampler(datasets_train, iter=True)
+    datasets_train = [bvidvc_train, youtube_vos_train]
+    train_sampler = Sampler(datasets_train, iter=False)
 
     # DataLoaders
     train_loader = DataLoader(

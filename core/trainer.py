@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
-import pytorch_warmup as warmup
 from torch.utils.tensorboard import SummaryWriter
 
 from core.loss import AdversarialLoss, PerceptualLoss, LPIPSLoss, CharbonnierLoss
@@ -103,8 +102,8 @@ class Trainer:
         # setup optimizers and schedulers
         self.setup_optimizers()
         self.setup_schedulers()
-        self.warmup_scheduler = warmup.UntunedLinearWarmup(self.optimizer)
-        self.scaler = torch.cuda.amp.GradScaler(enabled=True)
+        # self.warmup_scheduler = warmup.UntunedLinearWarmup(self.optimizer)
+        self.scaler = torch.GradScaler('cuda', enabled=True)
         self.load()
 
         # Set up tensorboard
@@ -131,20 +130,19 @@ class Trainer:
 
     def setup_schedulers(self):
         """Set up schedulers."""
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        self.scheduler = torch.optim.lr_scheduler.StepLR(
             self.optimizer,
-            mode="max",
-            factor=0.5,
-            patience=5,
-            threshold=0.01,  # metric to be used is psnr
-            threshold_mode="abs",
-            verbose=True,
+            step_size = 50,
+            gamma = 0.5
         )
-
-
-    def get_lr(self):
-        """Get current learning rate."""
-        return self.optimizer.param_groups[0]["lr"]
+        # self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        #     self.optimizer,
+        #     mode="max",
+        #     factor=0.5,
+        #     patience=5,
+        #     threshold=0.01,  # metric to be used is psnr
+        #     threshold_mode="abs",
+        # )
 
     def add_summary(self, writer, name, val):
         """
@@ -249,7 +247,8 @@ class Trainer:
             pbar.set_postfix(epoch=self.epoch)
             self.prefetcher.reset()
             self._train_epoch(pbar)
-            self.validate()
+            # self.validate()
+            self.scheduler.step()
             if self.iteration > self.train_args["iterations"]:
                 break
         print("\nTraining complete.")
@@ -264,7 +263,7 @@ class Trainer:
         while train_data is not None:
             with torch.autocast(device_type=device, dtype=torch.bfloat16):
                 self.iteration += 1
-                frames, blurry_frames, depths, blur_maps, flows_f, flows_b, _ = (
+                frames, blurry_frames, depths, blur_maps, _ = (
                     train_data
                 )
                 frames, blurry_frames, depths, blur_maps = (
@@ -305,7 +304,6 @@ class Trainer:
                 ]
 
                 # Get GT Optical Flow
-                gt_flows_bi = (flows_f.to(device), flows_b.to(device))
                 blurry_flows_bi = self.raft(masked_local_frames)
 
                 # ---- Image Propagation ----
@@ -387,14 +385,13 @@ class Trainer:
 
                 # total_loss = sr_loss + hole_loss + valid_loss
                 total_loss = self.l1_loss(ori_pred_imgs, frames)
-                self.add_summary(self.writer, "loss/total_loss", total_loss.item())
-                self.add_summary(self.writer, "loss/learning_rate", self.get_lr())
+                self.add_summary(self.writer, "loss/total_loss", total_loss.item())                
+                self.add_summary(self.writer, "loss/learning_rate", self.scheduler.get_last_lr()[0])
 
             self.scaler.scale(total_loss).backward()
             self.scaler.step(self.optimizer)
             # with self.warmup_scheduler.dampening():
             self.scaler.update()
-            self.scheduler.step()
             self.optimizer.zero_grad()
             
 
@@ -448,18 +445,10 @@ class Trainer:
                     )
 
                 # flow to cpu
-                gt_flows_forward_cpu = flow_to_image(gt_flows_bi[0][0]).cpu()
-                masked_flows_forward_cpu = (
-                    gt_flows_forward_cpu[0] * (1 - local_masks[0][0].cpu())
-                    + local_masks[0][0].cpu()
-                ).to(gt_flows_forward_cpu)
-                pred_flows_forward_cpu = flow_to_image(blurry_flows_bi[0][0]).cpu()
-
+                flows_forward_cpu = flow_to_image(blurry_flows_bi[0][0]).cpu()
                 flow_results = torch.cat(
                     [
-                        masked_flows_forward_cpu,
-                        pred_flows_forward_cpu[0],
-                        gt_flows_forward_cpu[0],
+                        flows_forward_cpu[0],
                     ],
                     1,
                 )
@@ -487,7 +476,7 @@ class Trainer:
 
             # console logs
             pbar.update(1)
-            pbar.set_description((f"LR: {self.get_lr()} Loss: {total_loss.item():.3f}"))
+            pbar.set_description((f"LR: {self.scheduler.get_last_lr()[0]} Loss: {total_loss.item():.3f}"))
 
             # saving models
             if self.iteration % self.train_args["save_freq"] == 0:

@@ -123,8 +123,6 @@ class GroupRandomHorizontalDepthFlip(object):
         blurred_img_group,
         depth_group,
         mask_group,
-        flowF_group,
-        flowB_group,
     ):
         v = random.random()
         if v < 0.5:
@@ -134,17 +132,13 @@ class GroupRandomHorizontalDepthFlip(object):
             ]
             ret_depth = [F.hflip(depth) for depth in depth_group]
             ret_mask = [F.hflip(mask) for mask in mask_group]
-            ret_flowF = [ff[:, ::-1] * [-1.0, 1.0] for ff in flowF_group]
-            ret_flowB = [fb[:, ::-1] * [-1.0, 1.0] for fb in flowB_group]
-            return ret_img, ret_blurred_img, ret_depth, ret_mask, ret_flowF, ret_flowB
+            return ret_img, ret_blurred_img, ret_depth, ret_mask
         else:
             return (
                 img_group,
                 blurred_img_group,
                 depth_group,
                 mask_group,
-                flowF_group,
-                flowB_group,
             )
 
 

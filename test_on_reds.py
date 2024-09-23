@@ -8,15 +8,14 @@ import time
 
 import torch
 import torchvision
-import matplotlib.pyplot as plt
 
 from core.metrics import calc_psnr_and_ssim
 from model.modules.flow_comp_raft import RAFT_bi
 from model.recurrent_flow_completion import RecurrentFlowCompleteNet
 from model.depthpainter import DepthPainter
 
-from depth_anything.dpt import DepthAnything
-from depth_anything.util.transform import Resize, NormalizeImage, PrepareForNet
+
+
 
 
 #  read frames from video
@@ -138,7 +137,7 @@ def get_gt_frames(gt_dir, video_name):
     frames = []
     fr_lst = sorted(os.listdir(frame_path))
     for fr in fr_lst:
-        frame = plt.imread(os.path.join(frame_path, fr))
+        # frame = plt.imread(os.path.join(frame_path, fr))
         if np.max(frame) > 1:
             frames.append((frame).astype(np.uint8))
         else:
