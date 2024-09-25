@@ -20,57 +20,6 @@ from model.depthpainter import DepthPainter
 # from depth_anything.util.transform import Resize, NormalizeImage, PrepareForNet
 
 
-#  read frames from video
-def read_from_videos(root_dir, video_name):
-    """
-    Read blurry_frames, depths, and masks from the specified root directory.
-
-    Args:
-        root_dir (str): The root directory containing the frames, depths, and masks folders.
-
-    Returns:
-        tuple: A tuple containing the following elements:
-            - blurry_frames (torch.Tensor): A tensor containing the blurry_frames read from the frames folder.
-            - depths (torch.Tensor): A tensor containing the depths read from the depths folder.
-            - masks (torch.Tensor): A tensor containing the masks read from the masks folder.
-            - fps (None): The frames per second (fps) of the video (currently set to None).
-            - video_name (str): The name of the video (extracted from the root directory).
-
-    """
-
-    root_dir = os.path.join(root_dir, video_name)
-
-    frame_path = os.path.join(root_dir, "frames")
-    blurry_frames = []
-    fr_lst = sorted(os.listdir(frame_path))
-    for fr in fr_lst:
-        blurry_frame = torchvision.io.read_image(os.path.join(frame_path, fr))
-        blurry_frames.append(blurry_frame)
-
-    depth_path = os.path.join(root_dir, "depths")
-    depths = []
-    depth_lst = sorted(os.listdir(depth_path))
-    for fr in depth_lst:
-        depth = torchvision.io.read_image(os.path.join(depth_path, fr))
-        depths.append(depth)
-
-    mask_path = os.path.join(root_dir, "masks")
-    masks = []
-    mask_lst = sorted(os.listdir(mask_path))
-    for fr in mask_lst:
-        mask = torchvision.io.read_image(os.path.join(mask_path, fr))
-        masks.append(mask)
-
-    fps = None
-
-    return (
-        torch.stack(blurry_frames),
-        torch.stack(depths),
-        torch.stack(masks),
-        fps,
-    )
-
-
 def get_ref_index(mid_neighbor_id, neighbor_ids, length, ref_stride=10, ref_num=-1):
     """
     Get reference indices based on the given parameters.
@@ -246,24 +195,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     #############################################
-    # Set up RAFT and flow competition depthpainter
+    # Set up RAFT 
     ##############################################
 
     raft = RAFT_bi(model_path="./weights/raft-things.pth", device=device).to(device)
 
-    flow_completion = RecurrentFlowCompleteNet()
-    flow_completion.load_state_dict(torch.load("./weights/FlowRefocus.pth"))
-    for p in flow_completion.parameters():
-        p.requires_grad = False
-    flow_completion.to(device)
-    flow_completion.eval()
 
     ##############################################
-    # Set up DepthPainter depthpainter
+    # Set up DaBiT
     ##############################################
 
     depthpainter = DepthPainter()
-    depthpainter.load_state_dict(torch.load("./weights/DepthPainter.pth"))
+    depthpainter.load_state_dict(torch.load("./weights/dabit.pth", weights_only=True))
     for p in depthpainter.parameters():
         p.requires_grad = False
     depthpainter.to(device)
@@ -275,11 +218,11 @@ if __name__ == "__main__":
 
     test_dir = os.path.join(args.input, "blur_tests")
 
-    metrics = ["PSNR", "SSIM", "LPIPS"]
-    results_dict = {k: [] for k in metrics}
-    results_dict["Times"] = []
-    results_dict["Frames"] = []
-    logfile = open(os.path.join(args.output, "results.txt"), "a")
+    # metrics = ["PSNR", "SSIM", "LPIPS"]
+    # results_dict = {k: [] for k in metrics}
+    # results_dict["Times"] = []
+    # results_dict["Frames"] = []
+    # logfile = open(os.path.join(args.output, "results.txt"), "a")
 
     pbar = tqdm(os.listdir(test_dir))
     for video_name in pbar:

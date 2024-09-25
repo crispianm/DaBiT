@@ -31,8 +31,8 @@ def main(config):
 
     # Dataset and Sampler
     train_args = config["trainer"]
-    youtube_vos_train = TrainDataset(config["dl_config"], config["youtube-vos"])
-    bvidvc_train = TrainDataset(config["dl_config"], config["bvidvc"])
+    youtube_vos_train = TrainDataset(config["dl_config"], config["youtube-vos"], config["device"])
+    bvidvc_train = TrainDataset(config["dl_config"], config["bvidvc"], config["device"])
     datasets_train = [bvidvc_train, youtube_vos_train]
     train_sampler = Sampler(datasets_train, iter=False)
 

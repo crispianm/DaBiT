@@ -1,4 +1,5 @@
 import os
+import cv2
 import numpy as np
 from tqdm import tqdm 
 import pytorch_wavelets as pw
@@ -7,104 +8,65 @@ import torchvision.io as io
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
+from model.modules.depth_anything_v2.dpt import DepthAnythingV2
+from core.utils import get_blur_map
 
-def print_summary(name, namestring):
-    print(
-        f"{namestring} shape: ",
-        name.shape,
-        "\n\t(Min, Max) = (",
-        name.min().item(),
-        ", ",
-        name.max().item(),
-        ")",
-        "\n\tUnique values: ",
-        torch.unique((name*255).to(torch.uint8)),
+
+def process_folder(input, output, depth_model, device):
+
+    if not os.path.exists(output):
+        os.makedirs(output)
+
+    for img_path in tqdm(sorted(os.listdir(input)), leave=False):
+
+        # Load Image
+        img_path = os.path.join(input, img_path)
+        img = cv2.imread(img_path)
+
+        # Load Depth Image and resize
+        depth = depth_model.infer_image(img)
+        depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
+        depth = 255 - depth
+
+        # Convert numpy arrays to tensors
+        img = torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR)).permute(2, 0, 1).float() 
+        depth = torch.tensor(depth).float()
         
-    )
-
-
-
-def norm_tensor(tensor):
-    return (tensor - torch.min(tensor)) / (torch.max(tensor) - torch.min(tensor))
-
-def normalize_blur_maps(blur_map, max_level=11):
-
-    bm_norm = norm_tensor(blur_map) * 255
-
-    norms = [round(255*i/max_level) for i in range(1, max_level+1, 2)]
-    blur_map_norm = torch.zeros_like(blur_map)
-
-    for i in range(len(norms)):
-        if i == 0:
-            blur_map_norm[bm_norm <= norms[i]] = norms[i]
-        else:
-            blur_map_norm[(bm_norm > norms[i-1]) & (bm_norm <= norms[i])] = norms[i]
-
-    return blur_map_norm
-
-def get_wavelet(img):
-
-    img = F.interpolate(img.unsqueeze(0), size=(img.shape[-2]*2, img.shape[-1]*2), mode='bilinear')
-    transform = pw.DWTForward(J=1, wave='haar', mode='zero')
-
-    yL, yh = transform(img)
-    b, c, wt, h, w = yh[0].shape
-    yh = yh[0].view(wt, b, c, h, w)
-
-    wavelet = torch.abs(yh[0]) + torch.abs(yh[1]) + torch.abs(yh[2])
-    wavelet = torch.sum(wavelet, 1, keepdim=True) / 255
-
-    return wavelet[0]
-
-def get_blur_map(image_path, depth_path, levels=9):
-
-    # Read image and depth
-    depth = io.read_image(depth_path, mode=io.ImageReadMode.GRAY).float() / 255
-    d_l = (levels + 1) / 2
-    depth = torch.round(depth * d_l) / d_l
-    img_tensor = io.read_image(image_path, mode=io.ImageReadMode.GRAY).float()
-
-
-    # Get wavelet transform
-    wavelet = get_wavelet(img_tensor)
-    # wavelet = norm_tensor(wavelet)
-
-    blur_map = torch.zeros_like(depth)
-    for d in torch.unique(depth):
-        wavelet_sum = torch.sum(wavelet[depth == d])
-        wavelet_sum /= torch.sum(depth == d)
-        blur_map[depth == d] = 1 - wavelet_sum
-
-    blur_map_norm = normalize_blur_maps(blur_map).to(torch.uint8)
-    # blur_map_norm = (blur_map_norm + torch.min(blur_map_norm[blur_map_norm > 0])) / (torch.max(blur_map_norm) + torch.min(blur_map_norm[blur_map_norm > 0])) * 255
-    # blur_map_norm[blur_map_norm == 0] = torch.min(blur_map_norm[blur_map_norm > 0])
-    
-    # return blur_map_norm.to(torch.uint8)
-    return blur_map_norm
-
-
-def process_folder(folder_path):
-
-    for video_name in tqdm(os.listdir(folder_path)):
-
-        out_dir = os.path.join(folder_path, video_name, "wavelet_blur_maps")
-        if not os.path.exists(out_dir):
-            os.makedirs(out_dir)
-        frames_path = os.path.join(folder_path, video_name, "frames")
-        depths_path = os.path.join(folder_path, video_name, "depths")
-
-        for img_path, depth_path in tqdm(zip(os.listdir(frames_path), os.listdir(depths_path)), leave=False):
-            img_path = os.path.join(frames_path, img_path)
-            depth_path = os.path.join(depths_path, depth_path)
-            blur_map = get_blur_map(img_path, depth_path)
-            blur_map = torch.cat((blur_map, blur_map, blur_map), 0)
-            
-            blur_map = blur_map.permute(1,2,0).numpy()
-            blur_map = ((blur_map / np.max(blur_map)) * 255).astype(np.uint8)
-
-
-            out_map_path = img_path.replace("frames", "wavelet_blur_maps")
-            plt.imsave(out_map_path, blur_map, cmap='gray')
+        # Create Blur Map
+        blur_map = get_blur_map(img, depth.unsqueeze(0))
+        # Save Blur Map as PNG
+        blur_map = blur_map.squeeze().cpu().numpy()
+        blur_map = (blur_map - blur_map.min()) / (blur_map.max() - blur_map.min()) * 255.0
+        blur_map = blur_map.astype(np.uint8)
+        blur_map_path = os.path.join(output, os.path.basename(img_path))
+        cv2.imwrite(blur_map_path, blur_map)
       
 
-process_folder("T:/ProPainter Datasets/davis/blur_tests/")
+if __name__ == "__main__":
+
+    # Check if GPU is available
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print("Using ", torch.cuda.get_device_name(0))
+    else:
+        # use apple silicon if no cuda gpu available
+        print("No GPU found, using cpu instead")
+        device = torch.device("cpu")
+
+    model_configs = {
+        'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
+        'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
+        'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
+        'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
+    }
+
+    encoder = 'vitl'
+
+    depth_model = DepthAnythingV2(**model_configs[encoder])
+    depth_model.load_state_dict(torch.load(f'./weights/depth_anything_v2_{encoder}.pth', map_location='cpu', weights_only=True))
+    depth_model = depth_model.to(device).eval()
+
+    input = "/home/wg19671/Documents/bvidvc/frames/CTaksinBridgeVidevo_960x544_23fps_10bit_420"
+    output = "/home/wg19671/Documents/test"
+
+    process_folder(input, output, depth_model, device)

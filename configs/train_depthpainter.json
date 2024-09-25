@@ -7,23 +7,19 @@
         "num_local_frames": 10,
         "num_ref_frames": 6,
         "load_flow": 1,
-        "load_depth": 1,
         "use_blur_masks": 1
     },
     "youtube-vos": {
         "name": "youtube-vos",
-        "video_root": "/home/wg19671/Documents/youtube-vos/frames",
-        "depth_root": "/home/wg19671/Documents/youtube-vos/depths"
+        "video_root": "/home/wg19671/Documents/youtube-vos/frames"
     },
     "bvidvc": {
         "name": "bvidvc",
-        "video_root": "/home/wg19671/Documents/bvidvc/frames",
-        "depth_root": "/home/wg19671/Documents/bvidvc/depths"
+        "video_root": "/home/wg19671/Documents/bvidvc/frames"
     },
     "low_light_10": {
         "name": "low_light_10",
-        "video_root": "T:/ProPainter Datasets/low_light_10/frames/",
-        "depth_root": "T:/ProPainter Datasets/low_light_10/depths/"
+        "video_root": "T:/ProPainter Datasets/low_light_10/frames/"
     },
     "losses": {
         "hole_weight": 1,

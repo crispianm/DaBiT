@@ -95,33 +95,13 @@ class TestZipReader(object):
 # ###########################################################################
 
 
-# def to_tensors():
-#     return transforms.Compose([Stack(), ToTorchFormatTensor()])
-
-
-class GroupRandomHorizontalFlowFlip(object):
-    """Randomly horizontally flips the given PIL.Image with a probability of 0.5"""
-
-    def __call__(self, img_group, mask_group, flowF_group, flowB_group):
-        v = random.random()
-        if v < 0.5:
-            ret_img = [F.hflip(img) for img in img_group]
-            ret_mask = [F.hflip(mask) for mask in mask_group]
-            ret_flowF = [ff[:, ::-1] * [-1.0, 1.0] for ff in flowF_group]
-            ret_flowB = [fb[:, ::-1] * [-1.0, 1.0] for fb in flowB_group]
-            return ret_img, ret_mask, ret_flowF, ret_flowB
-        else:
-            return img_group, mask_group, flowF_group, flowB_group
-
-
-class GroupRandomHorizontalDepthFlip(object):
-    """Randomly horizontally flips the given PIL.Image with a probability of 0.5"""
+class GroupRandomHorizontalFlip(object):
+    """Randomly horizontally flips the given tensor with a probability of 0.5"""
 
     def __call__(
         self,
         img_group,
         blurred_img_group,
-        depth_group,
         mask_group,
     ):
         v = random.random()
@@ -130,33 +110,15 @@ class GroupRandomHorizontalDepthFlip(object):
             ret_blurred_img = [
                 F.hflip(blurred_img) for blurred_img in blurred_img_group
             ]
-            ret_depth = [F.hflip(depth) for depth in depth_group]
             ret_mask = [F.hflip(mask) for mask in mask_group]
-            return ret_img, ret_blurred_img, ret_depth, ret_mask
+            return ret_img, ret_blurred_img, ret_mask
         else:
             return (
                 img_group,
                 blurred_img_group,
-                depth_group,
                 mask_group,
             )
 
-
-class GroupRandomHorizontalFlip(object):
-    """Randomly horizontally flips the given PIL.Image with a probability of 0.5"""
-
-    def __call__(self, img_group, mask_group, is_flow=False):
-        v = random.random()
-        if v < 0.5:
-            ret = [F.hflip(img) for img in img_group]
-            ret_mask = [F.hflip(mask) for mask in mask_group]
-            if is_flow:
-                for i in range(0, len(ret), 2):
-                    # invert flow pixel values when flipping
-                    ret[i] = ImageOps.invert(ret[i])
-            return ret, ret_mask
-        else:
-            return img_group, mask_group
 
 
 class Stack(object):
@@ -292,6 +254,7 @@ def normalize(x):
     ])
     return transfrm(x)
 
+
 def get_wavelet(img):
 
     img = nn.functional.interpolate(
@@ -308,7 +271,11 @@ def get_wavelet(img):
 
     return wavelet[0]
 
-def get_blur_map(wavelet, depth):
+
+def get_blur_map(img, depth):
+
+    wavelet = get_wavelet(img) / 255
+    depth = depth / 255
     
     rounded_depth = torch.round(depth, decimals=1)
     depth_values = torch.unique(rounded_depth[wavelet > 0])
@@ -327,37 +294,59 @@ def get_blur_map(wavelet, depth):
 
 def blur_with_depth(
     img,
-    depth_map,
+    depth,
     min_blur=1,
     max_blur=7,
-    focal_point=0.5,
+    focal_point=100,
     focus_range=100,
     sigma=5,
     num_layers=100,
 ):
+    """
+    Apply depth-based blurring to an image.
+    This function blurs an image based on the depth map provided. The amount of blur
+    is determined by the depth value at each pixel, with closer pixels receiving less
+    blur and farther pixels receiving more blur.
+
+    Parameters:
+        img (torch.Tensor): The input image tensor, shape [3, H, W], normalized to [0, 255].
+        depth (torch.Tensor): The depth map tensor, shape [H, W], normalized to [0, 255].
+        min_blur (int, optional): The minimum blur amount. Default is 1.
+        max_blur (int, optional): The maximum blur amount. Default is 7.
+        focal_point (float, optional): The focal point in the depth map, normalized to [0, 255]. Default is 100.
+        focus_range (int, optional): The range of depth values around the focal point that remain in focus. Default is 100.
+        sigma (int, optional): The standard deviation for the Gaussian blur. Default is 5.
+        num_layers (int, optional): The number of depth layers to process. Default is 100.
+
+    Returns:
+        torch.Tensor: The blurred image tensor, sclaed between [0, 255].
+
+    """
 
     out = torch.zeros(img.shape)
-
-    min_depth = 0
-    max_depth = torch.max(depth_map)
-    step = (max_depth - min_depth) / num_layers
+    step = 255 / num_layers
     assert step > 1, "Depth map and img should be normalized to [0, 255]"
-    layers = torch.arange(min_depth, max_depth, step)
+    layers = torch.arange(0, 255, step)
 
     for depth_value in layers:
-        mask = torch.zeros(depth_map.shape, dtype=torch.int32)
+        mask = torch.zeros(depth.shape)
         if depth_value == 0:
-            mask[depth_map == 0] = 1
-        mask[depth_map > depth_value] = 1
-        mask[depth_map > (depth_value + step)] = 0
+            mask[depth == 0] = 1
+        mask[depth > depth_value] = 1
+        mask[depth > (depth_value + step)] = 0
 
         blur_amount = get_bk_amount(
             depth_value, min_blur, max_blur, focus_range, focal_point
         )
-
-        blurred_slice = gaussian_blur(img, blur_amount, sigma)
-        masked_img = blurred_slice * mask
+        # print(f"Blur Amount: {blur_amount}")
+        if blur_amount == 1:
+            masked_img = img * mask
+        else:
+            blurred_slice = gaussian_blur(img, blur_amount, sigma)
+            masked_img = blurred_slice * mask
 
         out = torch.add(out, masked_img)
 
-    return out / 255.0
+    blurred_img = (out - out.min()) / (out.max() - out.min()) * 255
+
+    return blurred_img

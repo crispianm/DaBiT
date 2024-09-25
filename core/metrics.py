@@ -56,27 +56,6 @@ def calc_psnr_and_ssim(img1, img2):
 ###########################
 
 
-def init_i3d_model(i3d_model_path):
-    print(f"[Loading I3D model from {i3d_model_path} for FID score ..]")
-    i3d_model = InceptionI3d(400, in_channels=3, final_endpoint="Logits")
-    i3d_model.load_state_dict(torch.load(i3d_model_path))
-    i3d_model.to(torch.device("cuda:0"))
-    return i3d_model
-
-
-def calculate_i3d_activations(video1, video2, i3d_model, device):
-    """Calculate VFID metric.
-    video1: list[PIL.Image]
-    video2: list[PIL.Image]
-    """
-    video1 = to_tensors()(video1).unsqueeze(0).to(device)
-    video2 = to_tensors()(video2).unsqueeze(0).to(device)
-    video1_activations = get_i3d_activations(video1, i3d_model).cpu().numpy().flatten()
-    video2_activations = get_i3d_activations(video2, i3d_model).cpu().numpy().flatten()
-
-    return video1_activations, video2_activations
-
-
 def calculate_vfid(real_activations, fake_activations):
     """
     Given two distribution of features, compute the FID score between them
