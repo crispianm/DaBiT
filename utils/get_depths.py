@@ -4,7 +4,7 @@ import cv2
 import torch
 from tqdm import tqdm
 
-from depth_anything_v2.dpt import DepthAnythingV2
+from model.modules.depth_anything_v2.dpt import DepthAnythingV2
 
 
 """
