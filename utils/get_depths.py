@@ -1,12 +1,10 @@
 import argparse
-import numpy as np
 import os
+import cv2
 import torch
-import torch.nn.functional as F
 from tqdm import tqdm
 
-from PIL import Image
-from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+from depth_anything_v2.dpt import DepthAnythingV2
 
 
 """
@@ -15,37 +13,10 @@ python get_depths.py -i "./data_in" -o "./data_out"
 
 """
 
-# os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-
-
-def get_depth_estimate(filepath, image_processor, depth_model, device):
-    # Transform input for midas
-    image = Image.open(filepath)
-    inputs = image_processor(images=image, return_tensors="pt").to(device)
-
-    with torch.no_grad():
-        outputs = depth_model(**inputs)
-        predicted_depth = outputs.predicted_depth
-
-    # interpolate to original size
-    prediction = F.interpolate(
-        predicted_depth.unsqueeze(1),
-        size=image.size[::-1],
-        mode="bicubic",
-        align_corners=False,
-    )
-
-    # visualize the prediction
-    output = prediction.squeeze().cpu().numpy()
-    formatted = (output * 255 / np.max(output)).astype("uint8")
-    depth = Image.fromarray(formatted)
-
-    return depth
-
-
 def process_folder(
-    input_folder_path, output_folder_path, transform, depth_model, device
+    input_folder_path, output_folder_path, depth_model, device
 ):
+
     if not os.path.exists(output_folder_path):
         os.makedirs(output_folder_path)
     for item in tqdm(os.scandir(input_folder_path), leave=False):
@@ -59,17 +30,17 @@ def process_folder(
                 print(f"{output_file_path} already exists, skipping.")
             else:
                 try:
-                    depth_estimate = get_depth_estimate(
-                        input_file_path, transform, depth_model, device
-                    )
+                    image = cv2.imread(input_file_path)
+                    depth = depth_model.infer_image(image)
+                    depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
+                    depth = 255 - depth
+                    cv2.imwrite(output_file_path, depth)
+                
                 except Exception as e:
                     print(f"Error processing {input_file_path}: {e}")
                     with open("error_log.txt", "a") as f:
                         f.write(f"Error processing {input_file_path}: {e}\n")
                     continue
-
-                # print(f"Saving image {output_file_path}.")
-                depth_estimate.save(output_file_path)
 
         elif item.is_dir():
             # Recursively process subfolder
@@ -77,7 +48,6 @@ def process_folder(
             process_folder(
                 item.path,
                 subfolder_output_path,
-                transform,
                 depth_model,
                 device,
             )
@@ -85,7 +55,7 @@ def process_folder(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Apply MiDaS to a directory of images."
+        description="Apply DepthAnythingV2 to a directory of images."
     )
 
     parser.add_argument(
@@ -128,16 +98,17 @@ if __name__ == "__main__":
         print("No GPU found, using cpu instead")
         device = torch.device("cpu")
 
-    # Load model
-    depth_model = AutoModelForDepthEstimation.from_pretrained(
-        "depth-anything/Depth-Anything-V2-Small-hf"
-    ).to(device)
+    model_configs = {
+        'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
+        'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
+        'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
+        'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
+    }
 
-    # Define transforms for model
-    image_processor = AutoImageProcessor.from_pretrained(
-        "depth-anything/Depth-Anything-V2-Small-hf"
-    )
+    encoder = 'vitl'
 
-    process_folder(
-        args.input, args.output, image_processor, depth_model, args.device
-    )
+    depth_model = DepthAnythingV2(**model_configs[encoder])
+    depth_model.load_state_dict(torch.load(f'./weights/depth_anything_v2_{encoder}.pth', map_location='cpu', weights_only=True))
+    depth_model = depth_model.to(device).eval()
+
+    process_folder(args.input, args.output, depth_model, args.device)
