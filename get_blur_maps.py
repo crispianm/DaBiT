@@ -66,7 +66,7 @@ if __name__ == "__main__":
     depth_model.load_state_dict(torch.load(f'./weights/depth_anything_v2_{encoder}.pth', map_location='cpu', weights_only=True))
     depth_model = depth_model.to(device).eval()
 
-    input = "/home/wg19671/Documents/bvidvc/frames/CTaksinBridgeVidevo_960x544_23fps_10bit_420"
-    output = "/home/wg19671/Documents/test"
+    input = "/home/wg19671/Documents/refocusing/frames"
+    output = "/home/wg19671/Documents/refocusing/blur_maps"
 
     process_folder(input, output, depth_model, device)

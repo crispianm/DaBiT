@@ -537,7 +537,7 @@ class DepthPainter(BaseNetwork):
         trans_feat = trans_feat.view(b, t, -1, h, w)
 
         # residual
-        enc_feat = enc_feat + trans_feat
+        enc_feat = enc_feat.view(b, t, -1, h, w) + trans_feat
 
         if self.training:
             output = self.decoder(enc_feat.view(-1, c, h, w))

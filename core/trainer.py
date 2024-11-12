@@ -11,62 +11,12 @@ from torch.utils.tensorboard import SummaryWriter
 from core.loss import AdversarialLoss, PerceptualLoss, LPIPSLoss, CharbonnierLoss
 from core.dataset import *
 
-from model.modules.flow_comp_raft import RAFT_bi, FlowLoss, EdgeLoss
-from model.recurrent_flow_completion import RecurrentFlowCompleteNet
+from model.modules.flow_comp_raft import RAFT_bi
+from model.modules.depth_anything_v2.dpt import DepthAnythingV2
+
 
 from core.metrics import calc_psnr_and_ssim
 from RAFT.utils.flow_viz_pt import flow_to_image
-
-
-def read_from_videos(root_dir, video_name):
-    """
-    Read blurry_frames, depths, and masks from the specified root directory.
-
-    Args:
-        root_dir (str): The root directory containing the frames, depths, and masks folders.
-
-    Returns:
-        tuple: A tuple containing the following elements:
-            - blurry_frames (torch.Tensor): A tensor containing the blurry_frames read from the frames folder.
-            - depths (torch.Tensor): A tensor containing the depths read from the depths folder.
-            - masks (torch.Tensor): A tensor containing the masks read from the masks folder.
-            - fps (None): The frames per second (fps) of the video (currently set to None).
-            - video_name (str): The name of the video (extracted from the root directory).
-
-    """
-
-    root_dir = os.path.join(root_dir, video_name)
-
-    frame_path = os.path.join(root_dir, "frames")
-    blurry_frames = []
-    fr_lst = sorted(os.listdir(frame_path))
-    for fr in fr_lst:
-        blurry_frame = torchvision.io.read_image(os.path.join(frame_path, fr))
-        blurry_frames.append(blurry_frame)
-
-    depth_path = os.path.join(root_dir, "depths")
-    depths = []
-    depth_lst = sorted(os.listdir(depth_path))
-    for fr in depth_lst:
-        depth = torchvision.io.read_image(os.path.join(depth_path, fr))
-        depths.append(depth)
-
-    mask_path = os.path.join(root_dir, "masks")
-    # mask_path = os.path.join(root_dir, "wavelet_blur_maps")
-    masks = []
-    mask_lst = sorted(os.listdir(mask_path))
-    for fr in mask_lst:
-        mask = torchvision.io.read_image(os.path.join(mask_path, fr))
-        masks.append(mask)
-
-    fps = None
-
-    return (
-        torch.stack(blurry_frames),
-        torch.stack(depths),
-        torch.stack(masks),
-        fps,
-    )
 
 
 class Trainer:
@@ -97,6 +47,40 @@ class Trainer:
         #     p.requires_grad = False
         # self.fix_flow_complete.to(self.device)
         # self.fix_flow_complete.eval()
+
+        model_configs = {
+            "vits": {
+                "encoder": "vits",
+                "features": 64,
+                "out_channels": [48, 96, 192, 384],
+            },
+            "vitb": {
+                "encoder": "vitb",
+                "features": 128,
+                "out_channels": [96, 192, 384, 768],
+            },
+            "vitl": {
+                "encoder": "vitl",
+                "features": 256,
+                "out_channels": [256, 512, 1024, 1024],
+            },
+            "vitg": {
+                "encoder": "vitg",
+                "features": 384,
+                "out_channels": [1536, 1536, 1536, 1536],
+            },
+        }
+        encoder = "vits"  # or 'vitb', 'vitl', 'vitg'
+
+        depth_model = DepthAnythingV2(**model_configs[encoder])
+        depth_model.load_state_dict(
+            torch.load(
+                f"./weights/depth_anything_v2_{encoder}.pth",
+                map_location="cpu",
+                weights_only=True,
+            )
+        )
+        self.depth_model = depth_model.to(self.device).eval()
 
         self.interp_mode = self.config["interp_mode"]
         # setup optimizers and schedulers
@@ -184,10 +168,10 @@ class Trainer:
             )
 
             print(f"Loading model from {model_path}")
-            model_data = torch.load(model_path, map_location=self.device)
+            model_data = torch.load(model_path, map_location=self.device, weights_only=True)
             self.model.load_state_dict(model_data)
 
-            data_opt = torch.load(opt_path, map_location=self.device)
+            data_opt = torch.load(opt_path, map_location=self.device, weights_only=True)
             self.optimizer.load_state_dict(data_opt["optimizer"])
             self.scaler.load_state_dict(data_opt["scaler"])
 
@@ -198,11 +182,11 @@ class Trainer:
             opt_path = self.config["trainer"].get("opt_path", None)
             if model_path is not None:
                 print(f"Loading Gen-Net from {model_path}")
-                model_data = torch.load(model_path, map_location=self.device)
+                model_data = torch.load(model_path, map_location=self.device, weights_only=True)
                 self.model.load_state_dict(model_data)
 
                 if opt_path is not None:
-                    data_opt = torch.load(opt_path, map_location=self.device)
+                    data_opt = torch.load(opt_path, map_location=self.device, weights_only=True)
                     self.optimizer.load_state_dict(data_opt["optimizer"])
                     self.scheduler.load_state_dict(data_opt["scheduler"])
 
@@ -263,32 +247,32 @@ class Trainer:
         while train_data is not None:
             with torch.autocast(device_type=device, dtype=torch.bfloat16):
                 self.iteration += 1
-                frames, blurry_frames, depths, blur_maps, _ = (
+                gt_frames, resized_gt_frames, blurry_frames, blur_maps, _ = (
                     train_data
                 )
-                frames, blurry_frames, depths, blur_maps = (
-                    frames.to(device),
+                gt_frames, resized_gt_frames, blurry_frames, blur_maps = (
+                    gt_frames.to(device),
+                    resized_gt_frames.to(device),
                     blurry_frames.to(device),
-                    depths.to(device).float(),
                     blur_maps.to(device).float(),
                 )
+                depths = []
 
-                # frames: [b, t, c, ori_h, ori_w]
-                # blurry_frames: [b, t, c, h, w]
-                # masks: [b, t, 1, h, w]
-                # depths: [b, t, 1, h, w]
+
+                # Create Depth map of blurred images
+                for batch in blurry_frames:
+                    for blurred_img in batch:
+                        depth = self.depth_model.infer_image(blurred_img.permute(1, 2, 0).cpu().numpy())
+                        depth = 1 - ((depth - depth.min()) / (depth.max() - depth.min()))
+                        depths.append(torch.tensor(depth).unsqueeze(0))
+                depths = torch.stack(depths).to(device).unsqueeze(0)
+                
 
                 l_t = self.num_local_frames
-                b, t, c, ori_h, ori_w = frames.size()
                 b, t, c, h, w = blurry_frames.size()
 
-                resized_frames = torch.stack(
-                    [
-                        transforms.Resize(size=(h, w), antialias=None)(batch)
-                        for batch in frames
-                    ]
-                )
-                gt_local_frames = resized_frames[
+
+                gt_local_frames = resized_gt_frames[
                     :,
                     :l_t,
                 ]
@@ -328,7 +312,7 @@ class Trainer:
                     :l_t,
                 ] = prop_local_frames
 
-                # ---- Feature Propagation + Transformer + Super Resolution ----
+                # ---- Transformer + Super Resolution ----
                 ori_pred_imgs = self.model(
                     updated_frames,
                     depths,
@@ -384,7 +368,7 @@ class Trainer:
                 #     sr_loss = 0
 
                 # total_loss = sr_loss + hole_loss + valid_loss
-                total_loss = self.l1_loss(ori_pred_imgs, frames)
+                total_loss = self.l1_loss(ori_pred_imgs, gt_frames)
                 self.add_summary(self.writer, "loss/total_loss", total_loss.item())                
                 self.add_summary(self.writer, "loss/learning_rate", self.scheduler.get_last_lr()[0])
 
@@ -488,38 +472,38 @@ class Trainer:
             train_data = self.prefetcher.next()
 
 
-    def validate(self):
+    # def validate(self):
 
-        self.valid_loader = "T:/ProPainter Datasets/davis/blur_tests"
+    #     self.valid_loader = "T:/ProPainter Datasets/davis/blur_tests"
 
-        self.model.eval()
-        psnr_list = []
+    #     self.model.eval()
+    #     psnr_list = []
 
-        pbar = tqdm(os.listdir(self.valid_loader))
-        for video_name in pbar:
-            blurry_frames, depths, blur_maps, fps = read_from_videos(self.valid_loader, video_name)
+    #     pbar = tqdm(os.listdir(self.valid_loader))
+    #     for video_name in pbar:
+    #         blurry_frames, depths, blur_maps, fps = read_from_videos(self.valid_loader, video_name)
 
-            # Preprocess frames
-            blurry_frames = (blurry_frames / 255 * 2) - 1  # norm to -1, 1
-            blurry_frames = blurry_frames[:, :3, :, :]  # only use RGB channels
-            depths = depths[:, 0, :, :].unsqueeze(1) / 255.0  # norm to 0, 1
-            blur_maps = blur_maps[:, 0, :, :].unsqueeze(1) / 255.0  # norm to 0, 1
+    #         # Preprocess frames
+    #         blurry_frames = (blurry_frames / 255 * 2) - 1  # norm to -1, 1
+    #         blurry_frames = blurry_frames[:, :3, :, :]  # only use RGB channels
+    #         depths = depths[:, 0, :, :].unsqueeze(1) / 255.0  # norm to 0, 1
+    #         blur_maps = blur_maps[:, 0, :, :].unsqueeze(1) / 255.0  # norm to 0, 1
 
-            # Move to device (GPU)
-            blurry_frames, depths, blur_maps = (
-                blurry_frames.unsqueeze(0).to(self.device),
-                depths.unsqueeze(0).to(self.device),
-                blur_maps.unsqueeze(0).to(self.device),
-            )
+    #         # Move to device (GPU)
+    #         blurry_frames, depths, blur_maps = (
+    #             blurry_frames.unsqueeze(0).to(self.device),
+    #             depths.unsqueeze(0).to(self.device),
+    #             blur_maps.unsqueeze(0).to(self.device),
+    #         )
 
-            binary_masks = (blur_maps > 0.1).float()
+    #         binary_masks = (blur_maps > 0.1).float()
 
-            with torch.no_grad():
-                comp_frames = self.model(blurry_frames, depths, blur_maps, binary_masks)
+    #         with torch.no_grad():
+    #             comp_frames = self.model(blurry_frames, depths, blur_maps, binary_masks)
 
-            # Compute PSNR
-            for comp_frame, gt_frame in zip(comp_frames, blurry_frames):
-                psnr, _ = calc_psnr_and_ssim(comp_frame.cpu().numpy(), gt_frame.cpu().numpy())
-                psnr_list.append(psnr)
+    #         # Compute PSNR
+    #         for comp_frame, gt_frame in zip(comp_frames, blurry_frames):
+    #             psnr, _ = calc_psnr_and_ssim(comp_frame.cpu().numpy(), gt_frame.cpu().numpy())
+    #             psnr_list.append(psnr)
 
-        return psnr_list
+    #     return psnr_list

@@ -94,7 +94,6 @@ if __name__ == "__main__":
         device = torch.device("cuda")
         print("Using ", torch.cuda.get_device_name(0))
     else:
-        # use apple silicon if no cuda gpu available
         print("No GPU found, using cpu instead")
         device = torch.device("cpu")
 

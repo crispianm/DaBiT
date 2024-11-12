@@ -2,8 +2,8 @@
     "seed": 2023,
     "out_dir": "output/",
     "dl_config": {
-        "w": 864,
-        "h": 480,
+        "w_train": 864,
+        "h_train": 480,
         "num_local_frames": 10,
         "num_ref_frames": 6,
         "load_flow": 1,
@@ -11,15 +11,11 @@
     },
     "youtube-vos": {
         "name": "youtube-vos",
-        "video_root": "/home/wg19671/Documents/youtube-vos/frames"
+        "video_root": "/home/wg19671/Documents/youtube-vos"
     },
     "bvidvc": {
         "name": "bvidvc",
-        "video_root": "/home/wg19671/Documents/bvidvc/frames"
-    },
-    "low_light_10": {
-        "name": "low_light_10",
-        "video_root": "T:/ProPainter Datasets/low_light_10/frames/"
+        "video_root": "/home/wg19671/Documents/bvidvc"
     },
     "losses": {
         "hole_weight": 1,
@@ -32,7 +28,7 @@
         "kd_weight": 0,
         "sr_weight": 1
     },
-    "net": "depthpainter",
+    "net": "dabit",
     "interp_mode": "nearest",
     "trainer": {
         "version": "trainer",
@@ -43,7 +39,7 @@
         "num_prefetch_queue": 16,
         "log_freq": 10,
         "save_freq": 5000,
-        "iterations": 700e3,
+        "iterations": 300e3,
         "scheduler": {
             "type": "CosineAnnealingLR"
         }

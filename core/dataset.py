@@ -8,10 +8,9 @@ import torch
 import torchvision.transforms as transforms
 import torchvision.io as io
 
-from model.modules.depth_anything_v2.dpt import DepthAnythingV2
+import torchvision.transforms.functional as F
 
 from core.utils import (
-    GroupRandomHorizontalFlip,
     blur_with_depth,
     get_random_focus_depths,
     get_blur_map,
@@ -21,12 +20,13 @@ from core.utils import (
 class TrainDataset(torch.utils.data.Dataset):
     def __init__(self, args: dict, dataset: dict, device):
         self.args = args
-        self.video_root = dataset["video_root"]
+        self.video_root = os.path.join(dataset["video_root"], "frames")
+        self.depth_root = os.path.join(dataset["video_root"], "depths")
         self.device = device
 
         self.num_local_frames = args["num_local_frames"]
         self.num_ref_frames = args["num_ref_frames"]
-        self.ori_size = self.ori_w, self.ori_h = (args["w"], args["h"])
+        self.ori_size = self.ori_w, self.ori_h = (args["w_train"], args["h_train"])
         self.w, self.h = self.ori_w // 2, self.ori_h // 2
 
         self.video_names = sorted(os.listdir(self.video_root))
@@ -34,44 +34,13 @@ class TrainDataset(torch.utils.data.Dataset):
         self.video_dict = {}
         self.frame_dict = {}
 
-        for v in self.video_names:
-            frame_list = sorted(os.listdir(os.path.join(self.video_root, v)))
-            v_len = len(frame_list)
-            if v_len > self.num_local_frames + self.num_ref_frames:
-                self.video_dict[v] = v_len
-                self.frame_dict[v] = frame_list
-
-        self.video_names = list(self.video_dict.keys())  # update names
-
-        model_configs = {
-            "vits": {
-                "encoder": "vits",
-                "features": 64,
-                "out_channels": [48, 96, 192, 384],
-            },
-            "vitb": {
-                "encoder": "vitb",
-                "features": 128,
-                "out_channels": [96, 192, 384, 768],
-            },
-            "vitl": {
-                "encoder": "vitl",
-                "features": 256,
-                "out_channels": [256, 512, 1024, 1024],
-            },
-            "vitg": {
-                "encoder": "vitg",
-                "features": 384,
-                "out_channels": [1536, 1536, 1536, 1536],
-            },
-        }
-        encoder = "vitl"  # or 'vits', 'vitb', 'vitg'
-
-        depth_model = DepthAnythingV2(**model_configs[encoder])
-        depth_model.load_state_dict(
-            torch.load(f"./weights/depth_anything_v2_{encoder}.pth", map_location="cpu", weights_only=True)
-        )
-        self.depth_model = depth_model.to(self.device).eval()
+        for name in self.video_names:
+            frame_list = sorted(os.listdir(os.path.join(self.video_root, name)))
+            length = len(frame_list)
+            if length > self.num_local_frames + self.num_ref_frames:
+                self.video_dict[name] = length
+                self.frame_dict[name] = frame_list
+        self.video_names = list(self.video_dict.keys()) 
 
     def __len__(self):
         return len(self.video_names)
@@ -85,6 +54,7 @@ class TrainDataset(torch.utils.data.Dataset):
         return local_idx
 
     def __getitem__(self, index):
+
         video_name = self.video_names[index]
 
         window, step, focal_point = get_random_focus_depths()
@@ -97,7 +67,8 @@ class TrainDataset(torch.utils.data.Dataset):
         )
 
         # read video frames
-        frames = []
+        gt_frames = []
+        resized_frames = []
         blurred_frames = []
         masks = []
 
@@ -108,13 +79,15 @@ class TrainDataset(torch.utils.data.Dataset):
             img_path = os.path.join(self.video_root, video_name, frame_list[idx])
             img = cv2.imread(img_path)
             img = cv2.resize(img, (self.ori_w, self.ori_h))
-            frames.append(torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR)).permute(2, 0, 1))
+            gt_frames.append(torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR)).permute(2, 0, 1))
             img = cv2.resize(img, (self.w, self.h))
+            resized_frames.append(torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR)).permute(2, 0, 1))
 
             # Load Depth Image and resize
-            depth = self.depth_model.infer_image(img)
-            depth = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
-            depth = 255 - depth
+            depth_path = os.path.join(self.depth_root, video_name, frame_list[idx][:-4] + "_depth.png")
+            depth = cv2.imread(depth_path, cv2.IMREAD_GRAYSCALE)
+            depth = cv2.resize(depth, (self.w, self.h))
+
 
             # Convert numpy arrays to tensors
             img = torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR)).permute(2, 0, 1).float() 
@@ -138,22 +111,33 @@ class TrainDataset(torch.utils.data.Dataset):
             blur_map = get_blur_map(blurred_img, depth.unsqueeze(0))
             masks.append(blur_map)
 
-            if len(frames) == self.num_local_frames:  # random reverse
+            if len(gt_frames) == self.num_local_frames:  # random reverse
                 if random.random() < 0.5:
-                    frames.reverse()
+                    gt_frames.reverse()
+                    resized_frames.reverse()
                     blurred_frames.reverse()
                     masks.reverse()
 
-        (frames,blurred_frames,masks) = GroupRandomHorizontalFlip()(frames, blurred_frames, masks)
+        # Random Horizontal Flip
+        v = random.random()
+        if v < 0.5:
+            gt_frames = [F.hflip(img) for img in gt_frames]
+            resized_frames = [F.hflip(img) for img in resized_frames]
+            blurred_frames = [
+                F.hflip(blurred_img) for blurred_img in blurred_frames
+            ]
+            masks = [F.hflip(mask) for mask in masks]
+
 
         # Normalize to Tensors
-        gt_tensors = torch.stack(frames) / 255.0
+        gt_tensors = torch.stack(gt_frames) / 255.0
+        resized_tensors = torch.stack(resized_frames) / 255.0
         input_tensors = torch.stack(blurred_frames) / 255.0
         mask_tensors = torch.stack(masks)
 
-
         return (
             gt_tensors,
+            resized_tensors,
             input_tensors,
             mask_tensors,
             video_name,
