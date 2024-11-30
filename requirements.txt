@@ -14,3 +14,4 @@ pyyaml
 requests
 timm
 yapf
+tensorboard
