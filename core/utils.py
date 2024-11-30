@@ -97,8 +97,7 @@ def get_wavelet(img):
     img = nn.functional.interpolate(
         img.unsqueeze(0), size=(img.shape[-2] * 2, img.shape[-1] * 2), mode="bilinear"
     )
-    transform = pw.DWTForward(J=1, wave="haar", mode="zero")
-
+    transform = pw.DWTForward(J=1, wave="haar", mode="zero").to(img.device)
     yL, yh = transform(img)
     b, c, wt, h, w = yh[0].shape
     yh = yh[0].view(wt, b, c, h, w)
@@ -117,7 +116,7 @@ def get_blur_map(img, depth):
     rounded_depth = torch.round(depth, decimals=1)
     depth_values = torch.unique(rounded_depth[wavelet > 0])
 
-    blur_map = torch.zeros_like(depth)
+    blur_map = torch.zeros_like(depth).to(depth.device)
     for d in depth_values:
 
         wavelet_sum = torch.sum(wavelet[rounded_depth == d])
@@ -132,7 +131,7 @@ def get_blur_map(img, depth):
 def blur_with_depth(
     img,
     depth,
-    min_blur=1,
+    min_blur=0,
     max_blur=13,
     focal_point=100,
     focus_range=100,
@@ -160,12 +159,12 @@ def blur_with_depth(
 
     """
 
-    out = torch.zeros(img.shape)
+    out = torch.zeros(img.shape).to(img.device)
     step = 255 / num_layers
     assert step > 1, "Depth map and img should be normalized to [0, 255]"
 
     for depth_value in torch.arange(0, 255, step):
-        mask = torch.zeros(depth.shape)
+        mask = torch.zeros(depth.shape).to(depth.device)
         if depth_value == 0:
             mask[depth == 0] = 1
         mask[depth > depth_value] = 1
