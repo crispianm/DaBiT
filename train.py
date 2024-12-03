@@ -25,7 +25,6 @@ def main(config : dict):
         config["device"] = "cpu"
         print("No GPU found, using CPU instead")
 
-
     # Dataset and Sampler
     train_args = config["trainer"]
     youtube_vos_train = TrainDataset(config["dl_config"], config["youtube-vos"], config["device"])

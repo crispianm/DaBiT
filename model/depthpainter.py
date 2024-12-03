@@ -29,6 +29,12 @@ def length_sq(x):
 
 
 def fbConsistencyCheck(flow_fw, flow_bw, alpha1=0.01, alpha2=0.5):
+    # Ensure no NaN or Inf values in the flow fields
+    flow_fw = torch.nan_to_num(flow_fw)
+    flow_bw = torch.nan_to_num(flow_bw)
+
+    flow_fw = torch.clamp(flow_fw, -1000, 1000)
+    flow_bw = torch.clamp(flow_bw, -1000, 1000)
 
     flow_bw_warped = flow_warp(flow_bw, flow_fw.permute(0, 2, 3, 1))  # wb(wf(x))
     flow_diff_fw = flow_fw + flow_bw_warped  # wf + wb(wf(x))
@@ -36,8 +42,10 @@ def fbConsistencyCheck(flow_fw, flow_bw, alpha1=0.01, alpha2=0.5):
     mag_sq_fw = length_sq(flow_fw) + length_sq(flow_bw_warped)  # |wf| + |wb(wf(x))|
     occ_thresh_fw = alpha1 * mag_sq_fw + alpha2
 
-    # fb_valid_fw = (length_sq(flow_diff_fw) < occ_thresh_fw).float()
     fb_valid_fw = (length_sq(flow_diff_fw) < occ_thresh_fw).to(flow_fw)
+
+    # Apply morphological operations to clean up the validity mask
+    fb_valid_fw = F.max_pool2d(fb_valid_fw, kernel_size=3, stride=1, padding=1)
 
     return fb_valid_fw
 
@@ -118,7 +126,6 @@ class BidirectionalPropagation(nn.Module):
     def binary_mask(self, mask, th=0.1):
         mask[mask > th] = 1
         mask[mask <= th] = 0
-        # return mask.float()
         return mask.to(mask)
 
     def forward(self, x, flows_forward, flows_backward, mask, interpolation="bilinear"):
@@ -189,30 +196,27 @@ class BidirectionalPropagation(nn.Module):
                             mask_prop, flow_prop.permute(0, 2, 3, 1)
                         )
                         mask_prop_valid = self.binary_mask(mask_prop_valid)
+                        mask_prop_valid = F.max_pool2d(mask_prop_valid, kernel_size=3, stride=1, padding=1)
 
-                        union_vaild_mask = self.binary_mask(
+                        union_valid_mask = self.binary_mask(
                             mask_current * flow_valid_mask * (1 - mask_prop_valid)
                         )
                         feat_prop = (
-                            union_vaild_mask * feat_warped
-                            + (1 - union_vaild_mask) * feat_current
+                            union_valid_mask * feat_warped
+                            + (1 - union_valid_mask) * feat_current
                         )
-                        # update mask
                         mask_prop = self.binary_mask(
                             mask_current
                             * (1 - (flow_valid_mask * (1 - mask_prop_valid)))
                         )
 
-                # refine
                 if self.learnable:
                     feat = torch.cat([feat_current, feat_prop, mask_current], dim=1)
                     feat_prop = feat_prop + self.backbone[module_name](feat)
-                    # feat_prop = self.backbone[module_name](feat_prop)
 
                 feats[module_name].append(feat_prop)
                 masks[module_name].append(mask_prop)
 
-            # end for
             if "backward" in module_name:
                 feats[module_name] = feats[module_name][::-1]
                 masks[module_name] = masks[module_name][::-1]
@@ -232,8 +236,6 @@ class BidirectionalPropagation(nn.Module):
             outputs = outputs_f
 
         return (
-            outputs_b.view(b, -1, c, h, w),
-            outputs_f.view(b, -1, c, h, w),
             outputs.view(b, -1, c, h, w),
             masks_f,
         )
@@ -399,7 +401,7 @@ class DepthPainter(BaseNetwork):
         self, blurry_frames, flows, masks, interpolation="nearest"
     ):
 
-        _, _, prop_frames, updated_masks = self.img_prop_module(
+        prop_frames, updated_masks = self.img_prop_module(
             blurry_frames, flows[0], flows[1], masks, interpolation
         )
 
@@ -451,7 +453,7 @@ class DepthPainter(BaseNetwork):
         bin_masks,
         num_local_frames,
         interpolation="bilinear",
-        t_dilation=2,
+        t_dilation=1,
     ):
         """
         Args:
@@ -475,59 +477,50 @@ class DepthPainter(BaseNetwork):
             )
         )
         _, c, h, w = enc_feat.size()
-        # local_feat = enc_feat.view(b, t, c, h, w)[:, :l_t, ...]
-        # ref_feat = enc_feat.view(b, t, c, h, w)[:, l_t:, ...]
         fold_feat_size = (h, w)
 
-        # # flow and mask
-        # ds_flows_f = (
-        #     F.interpolate(
-        #         flows[0].view(-1, 2, h_in, w_in),
-        #         scale_factor=0.25,
-        #         mode="bilinear",
-        #         align_corners=False,
-        #     ).view(b, l_t - 1, 2, h, w)
-        #     / 4.0
-        # )
-        # ds_flows_b = (
-        #     F.interpolate(
-        #         flows[1].view(-1, 2, h_in, w_in),
-        #         scale_factor=0.25,
-        #         mode="bilinear",
-        #         align_corners=False,
-        #     ).view(b, l_t - 1, 2, h, w)
-        #     / 4.0
-        # )
+        # flow and mask
+        ds_flows_f = (
+            F.interpolate(
+                flows[0].view(-1, 2, h_in, w_in),
+                scale_factor=0.25,
+                mode="bilinear",
+                align_corners=False,
+            ).view(b, -1, 2, h, w)
+            / 4.0
+        )
+        ds_flows_b = (
+            F.interpolate(
+                flows[1].view(-1, 2, h_in, w_in),
+                scale_factor=0.25,
+                mode="bilinear",
+                align_corners=False,
+            ).view(b, -1, 2, h, w)
+            / 4.0
+        )
+
         ds_blur_maps = F.interpolate(
             blur_maps.reshape(-1, 1, h_in, w_in), scale_factor=0.25, mode="nearest"
         ).view(b, t, 1, h, w)
-        ds_blur_maps_local = ds_blur_maps[:, :l_t]
 
-        # ds_bin_masks_local = F.interpolate(
-        #     bin_masks[:, :l_t].reshape(-1, 1, h_in, w_in),
-        #     scale_factor=0.25,
-        #     mode="nearest",
-        # ).view(b, l_t, 1, h, w)
+        ds_bin_masks = F.interpolate(
+            bin_masks.reshape(-1, 1, h_in, w_in),
+            scale_factor=0.25,
+            mode="nearest",
+        ).view(b, -1, 1, h, w)
 
-        if self.training:
-            mask_pool_l = self.max_pool(ds_blur_maps.view(-1, 1, h, w))
-            mask_pool_l = mask_pool_l.view(
-                b, t, 1, mask_pool_l.size(-2), mask_pool_l.size(-1)
-            )
-        else:
-            mask_pool_l = self.max_pool(ds_blur_maps_local.view(-1, 1, h, w))
-            mask_pool_l = mask_pool_l.view(
-                b, l_t, 1, mask_pool_l.size(-2), mask_pool_l.size(-1)
-            )
+        mask_pool_l = self.max_pool(ds_blur_maps.view(-1, 1, h, w))
+        mask_pool_l = mask_pool_l.view(
+            b, t, 1, mask_pool_l.size(-2), mask_pool_l.size(-1)
+        )
 
-        # prop_mask_in = torch.cat([ds_blur_maps_local, ds_bin_masks_local], dim=2)
-        # _, _, local_feat, _ = self.feat_prop_module(
-        #     local_feat, ds_flows_f, ds_flows_b, prop_mask_in, interpolation
-        # )
-        # enc_feat = torch.cat((local_feat, ref_feat), dim=1)
+        prop_mask_in = torch.cat([ds_blur_maps, ds_bin_masks], dim=2)
+        enc_feat, _ = self.feat_prop_module(
+            enc_feat.unsqueeze(0), ds_flows_f, ds_flows_b, prop_mask_in, interpolation
+        )
 
         trans_feat = self.ss(enc_feat.view(-1, c, h, w), b, fold_feat_size)
-        mask_pool_l = rearrange(mask_pool_l, "b t c h w -> b t h w c").contiguous()
+        mask_pool_l = mask_pool_l.permute(0,1,3,4,2).contiguous()
 
         # transformer
         trans_feat = self.transformers(
@@ -539,12 +532,9 @@ class DepthPainter(BaseNetwork):
         # residual
         enc_feat = enc_feat.view(b, t, -1, h, w) + trans_feat
 
-        if self.training:
-            output = self.decoder(enc_feat.view(-1, c, h, w))
-            output = torch.tanh(output).view(b, t, 3, h_in, w_in)
-        else:
-            output = self.decoder(enc_feat[:, :l_t].view(-1, c, h, w))
-            output = torch.tanh(output).view(b, l_t, 3, h_in, w_in)
+        output = self.decoder(enc_feat.view(-1, c, h, w))
+        output = torch.tanh(output).view(b, t, 3, h_in, w_in)
+
 
         # ------------------------------------
         #       Super Resolution
