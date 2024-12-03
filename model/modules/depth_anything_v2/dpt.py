@@ -2,7 +2,7 @@ import cv2
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.transforms import Compose
+import torchvision.transforms as T
 
 from .dinov2 import DINOv2
 from .util.blocks import FeatureFusionBlock, _make_scratch
@@ -194,7 +194,7 @@ class DepthAnythingV2(nn.Module):
         return depth.cpu().numpy()
     
     def image2tensor(self, raw_image, input_size=518):        
-        transform = Compose([
+        transform = T.Compose([
             Resize(
                 width=input_size,
                 height=input_size,
@@ -219,3 +219,13 @@ class DepthAnythingV2(nn.Module):
         image = image.to(DEVICE)
         
         return image, (h, w)
+
+    def preprocess_tensor(self, raw_image_batch, input_size=(294, 518)):
+        transform = T.Compose([
+            T.Resize(input_size, interpolation=T.InterpolationMode.NEAREST),            
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+               
+        image = transform(raw_image_batch).to(raw_image_batch.device)
+                
+        return image
