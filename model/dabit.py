@@ -301,9 +301,9 @@ class deconv(nn.Module):
         return self.conv(x)
 
 
-class DepthPainter(BaseNetwork):
+class DaBiT(BaseNetwork):
     def __init__(self, init_weights=False, model_path=None):
-        super(DepthPainter, self).__init__()
+        super(DaBiT, self).__init__()
         channel = 128
         hidden = 512
         self.mid_channels = 64
@@ -392,7 +392,7 @@ class DepthPainter(BaseNetwork):
         if model_path is not None:
             ckpt = torch.load(model_path, map_location="cpu", weights_only=True)
             self.load_state_dict(ckpt, strict=True)
-            print("Pretrained DepthPainter has loaded.")
+            print("Pretrained DaBiT has loaded.")
 
         # print network parameter number
         self.print_network()

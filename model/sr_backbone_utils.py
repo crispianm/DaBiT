@@ -1,10 +1,30 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-import logging
 import torch.nn as nn
+from torch.nn.modules.batchnorm import _BatchNorm
 
-from mmengine.model import constant_init, kaiming_init
-from mmengine.utils.dl_utils.parrots_wrapper import _BatchNorm
-# from mmcv.utils import get_logger
+from .misc import constant_init
+
+
+def kaiming_init(
+    module, a=0, mode="fan_out", nonlinearity="relu", bias=0, distribution="normal"
+):
+    """Kaiming initialisation (local replacement for the mmengine helper).
+
+    Only weights matter for from-scratch training; evaluation loads pretrained
+    weights, so this has no effect on reproduced metrics.
+    """
+    assert distribution in ["uniform", "normal"]
+    if hasattr(module, "weight") and module.weight is not None:
+        if distribution == "uniform":
+            nn.init.kaiming_uniform_(
+                module.weight, a=a, mode=mode, nonlinearity=nonlinearity
+            )
+        else:
+            nn.init.kaiming_normal_(
+                module.weight, a=a, mode=mode, nonlinearity=nonlinearity
+            )
+    if hasattr(module, "bias") and module.bias is not None:
+        nn.init.constant_(module.bias, bias)
 
 
 # def get_root_logger(log_file=None, log_level=logging.INFO):

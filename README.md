@@ -1,153 +1,169 @@
 <div align="center">
 
+<h1>DaBiT: Depth and Blur informed Transformer for Video Focal Deblurring</h1>
 
-<h1>DepthPainter: Depth-Aware Propagation and Transformer for Video Inpainting</h1>
-
-
-<!-- <div>
-    <h4 align="center">
-        <a href="https://shangchenzhou.com/projects/ProPainter" target='_blank'>
-        <img src="https://img.shields.io/badge/🐳-Project%20Page-blue">
-        </a>
-        <a href="https://arxiv.org/abs/2309.03897" target='_blank'>
-        <img src="https://img.shields.io/badge/arXiv-2309.03897-b31b1b.svg">
-        </a>
-        <a href="https://youtu.be/92EHfgCO5-Q" target='_blank'>
-        <img src="https://img.shields.io/badge/Demo%20Video-%23FF0000.svg?logo=YouTube&logoColor=white">
-        </a>
-        <a href="https://huggingface.co/spaces/sczhou/ProPainter" target='_blank'>
-        <img src="https://img.shields.io/badge/Demo-%F0%9F%A4%97%20Hugging%20Face-blue">
-        </a>
-        <a href="https://openxlab.org.cn/apps/detail/ShangchenZhou/ProPainter" target='_blank'>
-        <img src="https://img.shields.io/badge/Demo-%F0%9F%91%A8%E2%80%8D%F0%9F%8E%A8%20OpenXLab-blue">
-        </a>
-        <img src="https://api.infinitescript.com/badgen/count?name=sczhou/ProPainter">
-    </h4>
-</div> -->
-
+<a href="https://arxiv.org/abs/2407.01230"><img src="https://img.shields.io/badge/arXiv-2407.01230-b31b1b.svg"></a>
+<a href="https://github.com/crispianm/DaBiT"><img src="https://img.shields.io/badge/GitHub-DaBiT-blue.svg?logo=github"></a>
 
 </div>
 
+DaBiT restores videos degraded by **focal (defocus) blur**. It uses per-frame **depth**
+(from [Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2)) and **blur maps**
+to guide a map-conditioned temporal transformer, together with optical-flow image propagation
+(from [RAFT](https://github.com/princeton-vl/RAFT)). The deblurred frames are additionally
+**2× super-resolved** by a cascade of PixelShuffle layers. The architecture is adapted from
+[ProPainter](https://github.com/sczhou/ProPainter).
 
-  
+## Results
 
+Evaluated on **DAVIS-Blur** (DAVIS-2017 with synthetic focal blur, 90 sequences). Paper numbers
+are from arXiv:2407.01230v3; "Reproduced" is this repository with `weights/dabit.pth` on an
+RTX 4090 (`python test_dabit.py`).
 
+| Metric | Paper | Reproduced (this repo) |
+|--------|------:|-----------------------:|
+| PSNR ↑ | 28.777 | **28.480** |
+| SSIM ↑ | 0.811 | 0.841 |
+| LPIPS ↓ | – | 0.242 |
 
+(Mean over all 90 DAVIS-Blur sequences, `weights/dabit.pth`, RTX 4090.)
 
-## Dependencies and Installation
+PSNR matches the paper. SSIM is reported with the canonical Gaussian-window implementation
+(`skimage`, `gaussian_weights=True, sigma=1.5`); small differences from the paper come from the
+SSIM implementation/window. LPIPS (AlexNet) is reported for completeness.
 
-1. Clone Repo
+## Installation
 
-   ```bash
-   git clone https://github.com/crispianm/DepthPainter.git
-   ```
+Tested with **Python 3.11** and **CUDA 12.4** on an RTX 4090.
 
-2. Create Conda Environment and Install Dependencies
+```bash
+git clone https://github.com/crispianm/DaBiT.git
+cd DaBiT
 
-   ```bash
-   # create new anaconda env
-   conda create -n depthpainter python=3.8 -y
-   conda activate depthpainter
+# create an environment (uv shown; venv/conda also fine)
+uv venv --python 3.11 .venv
+source .venv/bin/activate
 
-   # install python dependencies
-   pip3 install -r requirements.txt
-   ```
-
-   - CUDA >= 9.2
-   - PyTorch >= 1.7.1
-   - Torchvision >= 0.8.2
-   - Other required packages in `requirements.txt`
-
-## Get Started
-### Prepare pretrained models
-
-
-The directory structure will be arranged as:
-```
-weights
-   |- ProPainter.pth
-   |- recurrent_flow_completion.pth
-   |- raft-things.pth
-   |- i3d_rgb_imagenet.pt (for evaluating VFID metric)
-   |- README.md
+# one command — pulls the CUDA build of torch and all deps
+pip install -r requirements.txt
 ```
 
+> `pytorch_wavelets` still imports the legacy `pkg_resources` API, so `requirements.txt`
+> pins `setuptools<81`. The CUDA wheel index for torch is set at the top of `requirements.txt`;
+> change it for a different CUDA/CPU setup (see https://pytorch.org/get-started/locally).
 
-The results will be saved in the `results` folder.
-To test your own videos, please prepare the input `mp4 video` (or `split frames`) and `frame-wise mask(s)`.
+## Pretrained weights
 
-If you want to specify the video resolution for processing or avoid running out of memory, you can set the video size of `--width` and `--height`:
-```shell
-# process a 576x320 video; set --fp16 to use fp16 (half precision) during inference.
-python inference_propainter.py --video inputs/video_completion/running_car.mp4 --mask inputs/video_completion/mask_square.png --height 320 --width 576 --fp16
+Place the following in `weights/` (evaluation needs the first three):
+
+```
+weights/
+   |- dabit.pth                     # trained DaBiT model (~182 MB)
+   |- raft.pth                      # RAFT optical flow (~21 MB)
+   |- depth_anything_v2_vits.pth    # Depth Anything V2, ViT-S (~95 MB)
+   |- depth_anything_v2_vitb.pth    # (optional) ViT-B
+   |- depth_anything_v2_vitl.pth    # (optional) ViT-L
 ```
 
+`dabit.pth` is the final model. `dabit_280.pth` is the 280k-iteration checkpoint
+(`output_step_lr/model_280000.pth`). RAFT and Depth Anything V2 weights are from their
+respective releases. **Download the weights from the GitHub Release assets** (or the link in
+the repo description) and unzip into `weights/`.
 
+## Reproduce the paper results (evaluation)
 
-<!-- ## Dataset preparation
-<table>
-<thead>
-  <tr>
-    <th>Dataset</th>
-    <th>YouTube-VOS</th>
-    <th>DAVIS</th>
-  </tr>
-</thead>
-<tbody>
-  <tr>
-    <td>Description</td>
-    <td>For training (3,471) and evaluation (508)</td>
-    <td>For evaluation (50 in 90)</td>
-  <tr>
-    <td>Images</td>
-    <td> [<a href="https://competitions.codalab.org/competitions/19544#participate-get-data">Official Link</a>] (Download train and test all frames) </td>
-    <td> [<a href="https://data.vision.ee.ethz.ch/csergi/share/davis/DAVIS-2017-trainval-480p.zip">Official Link</a>] (2017, 480p, TrainVal) </td>
-  </tr>
-  <tr>
-    <td>Masks</td>
-    <td colspan="2"> [<a href="https://drive.google.com/file/d/1dFTneS_zaJAHjglxU10gYzr1-xALgHa4/view?usp=sharing">Google Drive</a>] [<a href="https://pan.baidu.com/s/1JC-UKmlQfjhVtD81196cxA?pwd=87e3">Baidu Disk</a>] (For reproducing paper results; provided in <a href="https://arxiv.org/abs/2309.03897">ProPainter</a> paper) </td>
-  </tr>
-</tbody>
-</table> -->
+The DAVIS-Blur test set ships in [`blur_tests/`](blur_tests) (90 sequences, each with
+`frames/` blurred input, `gt/` sharp ground truth, `masks/` blur maps and `depths/`), so
+evaluation is **self-contained** — no external dataset is required.
 
-The training and test split files are provided in `datasets/<dataset_name>`. For each dataset, you should place `JPEGImages` to `datasets/<dataset_name>`. Resize all video frames to size `432x240` for training. Unzip downloaded mask files to `datasets`.
-
-The `datasets` directory structure will be arranged as: (**Note**: please check it carefully)
-```
-datasets
-   |- davis
-      |- JPEGImages_432_240
-         |- <video_name>
-            |- 00000.jpg
-            |- 00001.jpg
-      |- test_masks
-         |- <video_name>
-            |- 00000.png
-            |- 00001.png   
-      |- train.json
-      |- test.json
-   |- youtube-vos
-      |- JPEGImages_432_240
-         |- <video_name>
-            |- 00000.jpg
-            |- 00001.jpg
-      |- test_masks
-         |- <video_name>
-            |- 00000.png
-            |- 00001.png
-      |- train.json
-      |- test.json   
+```bash
+python test_dabit.py                     # uses weights/dabit.pth, writes results/ + results.txt
+python test_dabit.py --model weights/dabit_280.pth   # evaluate a different checkpoint
 ```
 
+It runs RAFT → Depth Anything V2 → DaBiT over every sequence, saves the refocused/upscaled
+frames to `results/<sequence>/`, and prints the per-sequence and mean PSNR / SSIM / LPIPS.
 
+## Datasets & data preparation (for training)
 
+DaBiT is trained on **YouTube-VOS** (3,471 clips) + **BVI-DVC** (200 clips), with focal blur
+synthesised on the fly. The synthetic-blur test set (DAVIS-Blur) is built from DAVIS-2017 using
+the per-sequence parameters in [`davis_blur.csv`](davis_blur.csv).
 
-## License
+| Script | Purpose |
+|--------|---------|
+| [`get_depths.py`](get_depths.py) | Pre-compute Depth Anything V2 depth maps for a frame folder |
+| [`get_blur_maps.py`](get_blur_maps.py) | Generate per-frame focal-blur maps |
+| [`create_davis_blur.py`](create_davis_blur.py) | Build the DAVIS-Blur test set from DAVIS + `davis_blur.csv` |
 
-This project is licensed under NTU S-Lab License 1.0. Redistribution and use should follow this license.
+`core/dataset.py:TrainDataset` expects each dataset's `video_root` to contain `frames/<seq>/...`
+and `depths/<seq>/...`. On the training machine the datasets live under
+`/mnt/DATA/dabit_training_data/` and the paths are set in [`configs/dabit.json`](configs/dabit.json):
 
+```
+/mnt/DATA/dabit_training_data/
+   |- bvidvc/        {frames,depths}/<seq>/...          # matches TrainDataset directly
+   |- davis/         {frames,depths}/<seq>/...
+   |- youtube-vos/   train_all_frames/JPEGImages/<seq>/...   # frames
+   |- youtube-vos-depth/ vos-output/train_all_frames/depth/  # depths (separate tree)
+```
+
+> **Note:** YouTube-VOS frames and depths live in separate trees, so its `video_root` needs
+> `frames/` and `depths/` symlinks (or a copy) laid out as above before training. BVI-DVC and
+> DAVIS already match the expected layout.
+
+## Training
+
+```bash
+python train.py -c configs/dabit.json
+```
+
+Key settings in `configs/dabit.json`: AdamW, lr 1e-4, batch size 1, 750k iterations,
+CosineAnnealingLR, 432×240 crops, 10 local + 6 reference frames. Checkpoints are written to
+`out_dir`. (The released `weights/dabit.pth` is provided, so retraining is not required to
+reproduce the results.)
+
+## Model
+
+`model/dabit.py` defines the **`DaBiT`** network (45.3 M parameters): a 6-channel encoder
+(RGB + masks + depth), learnable bidirectional flow propagation, an 8-layer map-guided
+temporal sparse transformer, a decoder, and three cascading PixelShuffle layers for 2×
+super-resolution.
+
+## Repository layout
+
+```
+test_dabit.py            # evaluation / paper reproduction
+train.py                 # training entry point
+configs/dabit.json       # training configuration
+get_depths.py            # depth-map precomputation
+get_blur_maps.py         # blur-map generation
+create_davis_blur.py     # build the DAVIS-Blur test set
+davis_blur.csv           # per-sequence blur parameters
+blur_tests/              # DAVIS-Blur test set (self-contained)
+core/                    # dataset, trainer, losses, metrics, utils
+model/                   # DaBiT + super-resolution backbone, modules/ (transformer, depth, deform-conv)
+RAFT/                    # optical flow
+weights/                 # pretrained models (downloaded separately)
+```
 
 ## Acknowledgement
 
-This code is heavily based on [ProPainter](https://github.com/sczhou/ProPainter), thanks to the authors for providing their code!
+Built on [ProPainter](https://github.com/sczhou/ProPainter),
+[Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2) and
+[RAFT](https://github.com/princeton-vl/RAFT). Thanks to the authors for releasing their code.
 
+## License
+
+S-Lab License 1.0 (non-commercial). See [LICENSE](LICENSE).
+
+## Citation
+
+```bibtex
+@article{morris2024dabit,
+  title   = {DaBiT: Depth and Blur informed Transformer for Video Focal Deblurring},
+  author  = {Morris, Crispian and others},
+  journal = {arXiv preprint arXiv:2407.01230},
+  year    = {2024}
+}
+```

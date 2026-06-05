@@ -234,7 +234,7 @@ class Trainer:
             self.prefetcher.reset()
             torch.cuda.empty_cache()
             gc.collect()
-            # self._train_epoch(pbar)
+            self._train_epoch(pbar)
             self.validate()
             self.scheduler.step()
             if self.iteration > self.train_args["iterations"]:

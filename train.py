@@ -8,8 +8,7 @@ import torch
 import core
 import core.trainer
 from core.dataset import *
-from torch.utils.data import DataLoader
-from model.depthpainter import DepthPainter
+from model.dabit import DaBiT
 from core.prefetch_dataloader import PrefetchDataLoader, CPUPrefetcher
 
 
@@ -34,12 +33,6 @@ def main(config : dict):
 
 
     # DataLoaders
-    train_loader = DataLoader(
-        dataset=train_sampler,
-        batch_size=config["trainer"]["batch_size"],
-        shuffle=False,
-        num_workers=0,
-    )
     dataloader_args = dict(
         dataset=train_sampler,
         batch_size=train_args["batch_size"],
@@ -66,7 +59,7 @@ def main(config : dict):
 
 
     # Model and Trainer
-    model = DepthPainter().to(config["device"])
+    model = DaBiT().to(config["device"])
     print(config["net"], "network created")
 
     trainer = core.trainer.Trainer(config, prefetcher, model)

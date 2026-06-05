@@ -45,7 +45,13 @@ def calc_psnr_and_ssim(img1, img2):
 
     psnr = calculate_psnr(img1, img2)
     ssim = structural_similarity(
-        img1, img2, data_range=255, channel_axis=2, win_size=65
+        img1,
+        img2,
+        data_range=255,
+        channel_axis=2,
+        gaussian_weights=True,
+        sigma=1.5,
+        use_sample_covariance=False,
     )
 
     return psnr, ssim

@@ -1,6 +1,6 @@
 {
     "seed": 2023,
-    "out_dir": "/media/wg19671/DATA/dabit/output",
+    "out_dir": "/mnt/DATA/dabit/output",
     "dl_config": {
         "w_train": 864,
         "h_train": 480,
@@ -11,11 +11,11 @@
     },
     "youtube-vos": {
         "name": "youtube-vos",
-        "video_root": "/home/wg19671/Documents/youtube-vos"
+        "video_root": "/mnt/DATA/dabit_training_data/youtube-vos"
     },
     "bvidvc": {
         "name": "bvidvc",
-        "video_root": "/home/wg19671/Documents/bvidvc"
+        "video_root": "/mnt/DATA/dabit_training_data/bvidvc"
     },
     "losses": {
         "blur_weight": 1,

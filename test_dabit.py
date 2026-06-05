@@ -7,13 +7,14 @@ from tqdm import tqdm
 import time
 
 import torch
+import lpips as lpips_lib
 from torch.nn import functional
 
 from core.dataset import TestDataset
 from torch.utils.data import DataLoader
 from core.metrics import calc_psnr_and_ssim
 from model.modules.flow_comp_raft import RAFT_bi
-from model.depthpainter import DepthPainter
+from model.dabit import DaBiT
 from model.modules.depth_anything_v2.dpt import DepthAnythingV2
 
 
@@ -46,16 +47,6 @@ def get_ref_index(length, sample_length, local_idx):
 
 
 
-def print_summary(name, namestring):
-    print(
-        f"{namestring} shape: ",
-        name.shape,
-        "\n\t(Min, Max) = (",
-        name.min().item(),
-        ", ",
-        name.max().item(),
-        ")",
-    )
 
 
 
@@ -75,12 +66,6 @@ if __name__ == "__main__":
         type=str,
         default="./blur_tests",
         help="Path of the input video or image folder.",
-    )
-    parser.add_argument(
-        "--gt",
-        type=str,
-        default="/home/wg19671/Documents/davis/frames",
-        help="Path of the davis dataset.",
     )
     parser.add_argument(
         "-o",
@@ -156,13 +141,19 @@ if __name__ == "__main__":
     # Set up DaBiT
     ##############################################
 
-    depthpainter = DepthPainter()
+    depthpainter = DaBiT()
     # depthpainter.load_state_dict(torch.load("./weights/dabit.pth", weights_only=True))
     depthpainter.load_state_dict(torch.load(args.model, weights_only=True))
     for p in depthpainter.parameters():
         p.requires_grad = False
     depthpainter.to(device)
     depthpainter.eval()
+
+    ##############################################
+    # Set up LPIPS metric (AlexNet backbone)
+    ##############################################
+
+    lpips_model = lpips_lib.LPIPS(net="alex").to(device).eval()
 
     ##############################################
     # Begin Testing Loop
@@ -175,7 +166,7 @@ if __name__ == "__main__":
     logfile.write(f"Model: {args.model}")
 
 
-    test_ds = TestDataset(device, "./blur_tests")
+    test_ds = TestDataset(device, args.input)
     valid_loader = DataLoader(
         dataset=test_ds,
         batch_size=1,
@@ -184,9 +175,7 @@ if __name__ == "__main__":
     )
 
     pbar = tqdm(sorted(os.listdir(args.input)))
-    iii = 0
     for gt_tensors, input_tensors, blur_maps, video_name in valid_loader:
-        iii += 1    
         video_start_time = time.time()
 
         # Preprocess frames
@@ -330,11 +319,6 @@ if __name__ == "__main__":
             selected_blur_maps = blur_maps[:, neighbor_ids + ref_ids, :, :, :]
             selected_update_masks = updated_masks[:, neighbor_ids + ref_ids, :, :, :]
             selected_pred_flows_bi = raft(selected_imgs, iters=args.raft_iter)
- 
-            print_summary(selected_imgs, "selected_imgs")
-            print_summary(selected_blur_maps, "selected_blur_maps")
-            print_summary(selected_update_masks, "selected_update_masks")
-            print_summary(selected_pred_flows_bi[0], "selected_pred_flows_bi[0]")
 
             # ---- depth prediction ----
             selected_depths = []
@@ -436,14 +420,15 @@ if __name__ == "__main__":
 
             comp_frame = cv2.resize(cv2.cvtColor(comp_frame, cv2.COLOR_BGR2RGB), (gt_frame.shape[1], gt_frame.shape[0])).astype(np.float32)
             gt_frame = (gt_frame * 255).astype(np.float32)
-            cv2.imwrite("comp_frame.png", comp_frame)
-            cv2.imwrite("gt_frame.png", gt_frame)
 
             psnr, ssim = calc_psnr_and_ssim(comp_frame, gt_frame)
-            lpips = 0
+            with torch.no_grad():
+                c = torch.from_numpy(comp_frame / 255.0).permute(2, 0, 1).unsqueeze(0).float().to(device)
+                g = torch.from_numpy(gt_frame / 255.0).permute(2, 0, 1).unsqueeze(0).float().to(device)
+                lpips_val = lpips_model(c, g, normalize=True).item()
             psnr_list.append(psnr)
             ssim_list.append(ssim)
-            lpips_list.append(lpips)
+            lpips_list.append(lpips_val)
 
 
    
@@ -465,10 +450,6 @@ if __name__ == "__main__":
             )
         )
         logfile.write(msg)
-
-
-        if iii == 5:
-            break
 
 
     msg = (
