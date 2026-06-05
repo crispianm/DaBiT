@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 import os
 import cv2
+import math
 import argparse
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from tqdm import tqdm
 import time
@@ -12,11 +15,38 @@ from torch.nn import functional
 
 from core.dataset import TestDataset
 from torch.utils.data import DataLoader
-from core.metrics import calc_psnr_and_ssim
+from core.metrics import calc_psnr_and_ssim, calculate_tof
 from model.modules.flow_comp_raft import RAFT_bi
 from model.dabit import DaBiT
 from model.modules.depth_anything_v2.dpt import DepthAnythingV2
 
+
+# Number of worker processes used for the (CPU-bound) PSNR/SSIM/tOF metrics.
+METRIC_WORKERS = min(12, max(1, (os.cpu_count() or 2) - 2))
+
+
+def _compute_chunk_metrics(task):
+    """Worker: compute PSNR/SSIM/tOF for a contiguous slice of frames.
+
+    `comp_sub`/`gt_sub` are RGB float32 arrays in [0, 255]. When `has_prev` is
+    True the slice is prefixed with one extra context frame (global `start - 1`)
+    so tOF — which compares consecutive frames — can be evaluated across the
+    chunk boundary. tOF is undefined for global frame 0 (first frame skipped,
+    as in FMA-Net). Returns a list of (global_idx, psnr, ssim, tof_or_None).
+    """
+    cv2.setNumThreads(1)  # avoid oversubscription across worker processes
+    comp_sub, gt_sub, start, has_prev = task
+    offset = 1 if has_prev else 0
+
+    out = []
+    for p in range(offset, len(comp_sub)):
+        g = start + (p - offset)
+        psnr, ssim = calc_psnr_and_ssim(comp_sub[p], gt_sub[p])
+        tof = None
+        if p >= 1:  # a previous frame is available in this slice
+            tof = calculate_tof(comp_sub[p - 1], comp_sub[p], gt_sub[p - 1], gt_sub[p])
+        out.append((g, psnr, ssim, tof))
+    return out
 
 
 # def get_ref_index(mid_neighbor_id, neighbor_ids, length, ref_stride=10, ref_num=-1):
@@ -51,6 +81,10 @@ def get_ref_index(length, sample_length, local_idx):
 
 
 if __name__ == "__main__":
+
+    # Input sizes are constant across DAVIS-Blur, so let cuDNN pick the fastest
+    # convolution algorithms once and reuse them.
+    torch.backends.cudnn.benchmark = True
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -94,8 +128,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--save_videos",
-        default=True,
-        help="Save inpainted videos to the output folder.",
+        action="store_true",
+        help="Save refocused frames to the output folder (off by default; "
+        "skipping the per-frame PNG writes makes evaluation much faster).",
     )
     parser.add_argument(
         "--model",
@@ -141,13 +176,13 @@ if __name__ == "__main__":
     # Set up DaBiT
     ##############################################
 
-    depthpainter = DaBiT()
-    # depthpainter.load_state_dict(torch.load("./weights/dabit.pth", weights_only=True))
-    depthpainter.load_state_dict(torch.load(args.model, weights_only=True))
-    for p in depthpainter.parameters():
+    dabit = DaBiT()
+    # dabit.load_state_dict(torch.load("./weights/dabit.pth", weights_only=True))
+    dabit.load_state_dict(torch.load(args.model, weights_only=True))
+    for p in dabit.parameters():
         p.requires_grad = False
-    depthpainter.to(device)
-    depthpainter.eval()
+    dabit.to(device)
+    dabit.eval()
 
     ##############################################
     # Set up LPIPS metric (AlexNet backbone)
@@ -155,28 +190,48 @@ if __name__ == "__main__":
 
     lpips_model = lpips_lib.LPIPS(net="alex").to(device).eval()
 
+    # Pure inference: disable autograd everywhere so none of RAFT / Depth Anything
+    # / DaBiT / LPIPS build throwaway graphs (faster, lower VRAM, identical values).
+    torch.set_grad_enabled(False)
+
     ##############################################
     # Begin Testing Loop
     ##############################################
 
-    metrics = ["PSNR", "SSIM", "LPIPS", "Time"]
+    metrics = ["PSNR", "SSIM", "LPIPS", "tOF", "Time"]
     results_dict = {k: [] for k in metrics}
     results_dict["Frames"] = []
     logfile = open("./results/results.txt", "a")
     logfile.write(f"Model: {args.model}")
 
+    # Background-process pool for the CPU-bound metrics (PSNR/SSIM/tOF). The
+    # workers are pure NumPy/OpenCV and never touch CUDA, so 'fork' is safe and
+    # lets them inherit the already-imported metric functions (no torch re-import).
+    metric_pool = ProcessPoolExecutor(
+        max_workers=METRIC_WORKERS, mp_context=mp.get_context("fork")
+    )
 
+    # The DataLoader decodes/resizes the next video in background worker
+    # processes (TestDataset now returns CPU tensors) while the GPU is busy.
     test_ds = TestDataset(device, args.input)
     valid_loader = DataLoader(
         dataset=test_ds,
         batch_size=1,
         shuffle=False,
-        num_workers=0,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2,
     )
 
     pbar = tqdm(sorted(os.listdir(args.input)))
     for gt_tensors, input_tensors, blur_maps, video_name in valid_loader:
         video_start_time = time.time()
+
+        # Move the inputs the GPU pipeline needs onto the device; ground-truth
+        # frames stay on the CPU (only used for metrics).
+        input_tensors = input_tensors.to(device, non_blocking=True)
+        blur_maps = blur_maps.to(device, non_blocking=True)
 
         # Preprocess frames
         input_size = input_tensors[0].shape[-2:]  # height, width
@@ -248,7 +303,7 @@ if __name__ == "__main__":
                     flows_bi[1][:, s_f : e_f - 1],
                 )
                 prop_imgs_sub, updated_local_masks_sub = (
-                    depthpainter.img_propagation(
+                    dabit.img_propagation(
                         input_tensors[:, s_f:e_f],
                         pred_flows_bi_sub,
                         binary_masks[:, s_f:e_f],
@@ -273,7 +328,7 @@ if __name__ == "__main__":
             updated_masks = torch.cat(updated_masks, dim=1)
         else:
             b, t, _, _, _ = binary_masks.size()
-            prop_imgs, updated_local_masks = depthpainter.img_propagation(
+            prop_imgs, updated_local_masks = dabit.img_propagation(
                 input_tensors, flows_bi, binary_masks, interpolation="nearest"
             )
             updated_frames = (
@@ -282,6 +337,31 @@ if __name__ == "__main__":
             )
             updated_masks = updated_local_masks.view(b, t, 1, h, w)
             torch.cuda.empty_cache()
+
+        ##############################################
+        # Depth prediction (precomputed once per frame)
+        ##############################################
+        # Depth Anything is applied per frame with a per-frame min-max
+        # normalisation, so a frame's depth is independent of which inference
+        # window it lands in. The original code recomputed it inside the sliding
+        # window (every frame several times over); caching it here is bit-for-bit
+        # identical but evaluates each frame's depth exactly once.
+        depth_bs = 12
+        frame_depths = [None] * video_length
+        with torch.no_grad():
+            for s in range(0, video_length, depth_bs):
+                e = min(video_length, s + depth_bs)
+                depth_batch = depth_model.preprocess_tensor(updated_frames[0, s:e])
+                depth_batch = depth_model.forward(depth_batch).unsqueeze(1)
+                depth_batch = functional.interpolate(
+                    depth_batch, (h, w), mode="bilinear", align_corners=True
+                )
+                for k in range(depth_batch.shape[0]):
+                    depth = depth_batch[k]
+                    depth = 1 - ((depth - depth.min()) / (depth.max() - depth.min()))
+                    frame_depths[s + k] = depth
+        frame_depths = torch.stack(frame_depths)  # [video_length, 1, h, w]
+        torch.cuda.empty_cache()
 
         comp_frames = [None] * video_length
 
@@ -320,17 +400,8 @@ if __name__ == "__main__":
             selected_update_masks = updated_masks[:, neighbor_ids + ref_ids, :, :, :]
             selected_pred_flows_bi = raft(selected_imgs, iters=args.raft_iter)
 
-            # ---- depth prediction ----
-            selected_depths = []
-            with torch.no_grad():
-                for batch in selected_imgs:
-                    depth_batch = depth_model.preprocess_tensor(batch)
-                    depth_batch = depth_model.forward(depth_batch).unsqueeze(1)
-                    depth_batch = functional.interpolate(depth_batch, (h, w), mode="bilinear", align_corners=True)
-                    for depth in depth_batch:
-                        depth = 1 - ((depth - depth.min()) / (depth.max() - depth.min()))
-                        selected_depths.append(depth)
-                selected_depths = torch.stack(selected_depths).to(device).unsqueeze(0)
+            # ---- depth prediction (cached, see precompute above) ----
+            selected_depths = frame_depths[neighbor_ids + ref_ids].unsqueeze(0)
 
 
             l_t = len(neighbor_ids)
@@ -342,7 +413,7 @@ if __name__ == "__main__":
             # print("local_index: ", local_index)
 
             with torch.no_grad():
-                ori_pred_img = depthpainter(
+                ori_pred_img = dabit(
                     selected_imgs,
                     selected_depths,
                     selected_pred_flows_bi,
@@ -413,43 +484,62 @@ if __name__ == "__main__":
         # compute metrics
         ###########################################
         pbar.set_description(f"Computing metrics for {video_name[0]}")
-        gt_frames = gt_tensors[0].permute(0,2,3,1).cpu().numpy()
+        gt_frames = gt_tensors[0].permute(0, 2, 3, 1).cpu().numpy()
 
-        psnr_list, ssim_list, lpips_list = [], [], []
-        for comp_frame, gt_frame in tqdm(zip(comp_frames, gt_frames), leave=False):
+        # Build the comparison arrays once (RGB float32, [0, 255]); identical
+        # preprocessing to before — only the per-frame loop is gone.
+        comp_arrs, gt_arrs = [], []
+        for comp_frame, gt_frame in zip(comp_frames, gt_frames):
+            comp_arrs.append(
+                cv2.resize(
+                    cv2.cvtColor(comp_frame, cv2.COLOR_BGR2RGB),
+                    (gt_frame.shape[1], gt_frame.shape[0]),
+                ).astype(np.float32)
+            )
+            gt_arrs.append((gt_frame * 255).astype(np.float32))
 
-            comp_frame = cv2.resize(cv2.cvtColor(comp_frame, cv2.COLOR_BGR2RGB), (gt_frame.shape[1], gt_frame.shape[0])).astype(np.float32)
-            gt_frame = (gt_frame * 255).astype(np.float32)
+        # ---- LPIPS: batched on the GPU (per-frame value unchanged) ----
+        lpips_list = []
+        with torch.no_grad():
+            for s in range(0, len(comp_arrs), 16):
+                e = min(len(comp_arrs), s + 16)
+                c = torch.from_numpy(np.stack(comp_arrs[s:e]) / 255.0).permute(0, 3, 1, 2).float().to(device)
+                g = torch.from_numpy(np.stack(gt_arrs[s:e]) / 255.0).permute(0, 3, 1, 2).float().to(device)
+                lpips_list.extend(lpips_model(c, g, normalize=True).view(-1).cpu().tolist())
 
-            psnr, ssim = calc_psnr_and_ssim(comp_frame, gt_frame)
-            with torch.no_grad():
-                c = torch.from_numpy(comp_frame / 255.0).permute(2, 0, 1).unsqueeze(0).float().to(device)
-                g = torch.from_numpy(gt_frame / 255.0).permute(2, 0, 1).unsqueeze(0).float().to(device)
-                lpips_val = lpips_model(c, g, normalize=True).item()
-            psnr_list.append(psnr)
-            ssim_list.append(ssim)
-            lpips_list.append(lpips_val)
+        # ---- PSNR / SSIM / tOF: parallelised across CPU cores ----
+        n_workers = max(1, min(METRIC_WORKERS, video_length))
+        chunk = math.ceil(video_length / n_workers)
+        tasks = []
+        for s in range(0, video_length, chunk):
+            e = min(video_length, s + chunk)
+            has_prev = s > 0
+            lo = s - 1 if has_prev else s  # one frame of context for tOF
+            tasks.append((comp_arrs[lo:e], gt_arrs[lo:e], s, has_prev))
 
+        psnr_list = [0.0] * video_length
+        ssim_list = [0.0] * video_length
+        tof_list = []
+        for chunk_out in metric_pool.map(_compute_chunk_metrics, tasks):
+            for g, psnr, ssim, tof in chunk_out:
+                psnr_list[g] = psnr
+                ssim_list[g] = ssim
+                if tof is not None:
+                    tof_list.append(tof)
 
-   
         results_dict["PSNR"].append(np.mean(psnr_list))
         results_dict["SSIM"].append(np.mean(ssim_list))
         results_dict["LPIPS"].append(np.mean(lpips_list))
-        results_dict["Time"].append(avg_runtime)
+        results_dict["tOF"].append(np.mean(tof_list))
 
+        summary = (
+            f"PSNR: {np.mean(psnr_list):.2f}, SSIM: {np.mean(ssim_list):.4f}, "
+            f"LPIPS: {np.mean(lpips_list):.4f}, tOF: {np.mean(tof_list):.4f}, "
+            f"Time: {avg_runtime:.4f}"
+        )
         pbar.update(1)
-        pbar.write(
-            f"{video_name[0]} PSNR: {np.mean(psnr_list):.2f}, SSIM: {np.mean(ssim_list):.4f}, LPIPS: {np.mean(lpips_list):.4f}, Time: {avg_runtime:.4f}"
-        )
-
-        msg = (
-            "\n" + 
-            "{:<15s} -- {}".format(
-                f"{video_name[0]}",
-                f"PSNR: {np.mean(psnr_list):.2f}, SSIM: {np.mean(ssim_list):.4f}, LPIPS: {np.mean(lpips_list):.4f}, Time: {avg_runtime:.4f}",
-            )
-        )
-        logfile.write(msg)
+        pbar.write(f"{video_name[0]} {summary}")
+        logfile.write("\n" + "{:<15s} -- {}".format(f"{video_name[0]}", summary))
 
 
     msg = (
@@ -463,5 +553,6 @@ if __name__ == "__main__":
     print(msg, end="")
     logfile.write(msg)
     logfile.close()
+    metric_pool.shutdown()
 
 

@@ -218,22 +218,25 @@ class TestDataset(torch.utils.data.Dataset):
         input_frames_processed = []
         maps_processed = []
 
+        # Tensors are built on CPU so the DataLoader can decode/resize the next
+        # video in background worker processes; test_dabit.py moves them to the
+        # GPU. (TrainDataset still builds on-device for the training loop.)
         for frame in gt_frames:
             img = cv2.imread(os.path.join(self.video_root, video_name, "gt", frame))
             img = cv2.resize(img, (self.ori_w, self.ori_h))
-            img = torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR)).permute(2, 0, 1).to(self.device)
+            img = torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR)).permute(2, 0, 1)
             gt_frames_processed.append(img)
 
         for frame in input_frames:
             img = cv2.imread(os.path.join(self.video_root, video_name, "frames", frame))
             img = cv2.resize(img, (self.w, self.h))
-            img = torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR)).permute(2, 0, 1).to(self.device)
+            img = torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR)).permute(2, 0, 1)
             input_frames_processed.append(img)
 
         for mask in masks:
             img = cv2.imread(os.path.join(self.video_root, video_name, "masks", mask), cv2.IMREAD_GRAYSCALE)
             img = cv2.resize(img, (self.w, self.h))
-            img = torch.tensor(img).unsqueeze(0).to(self.device)
+            img = torch.tensor(img).unsqueeze(0)
             maps_processed.append(img)
 
         # Normalize to Tensors

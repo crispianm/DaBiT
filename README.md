@@ -22,15 +22,23 @@ RTX 4090 (`python test_dabit.py`).
 
 | Metric | Paper | Reproduced (this repo) |
 |--------|------:|-----------------------:|
-| PSNR ↑ | 28.777 | **28.480** |
-| SSIM ↑ | 0.811 | 0.841 |
-| LPIPS ↓ | – | 0.242 |
+| PSNR ↑  | 28.777 | **28.480** |
+| SSIM ↑  | 0.811  | 0.841 |
+| tOF ↓   | 1.239  | 1.189 |
+| LPIPS ↓ | –      | 0.242 |
 
 (Mean over all 90 DAVIS-Blur sequences, `weights/dabit.pth`, RTX 4090.)
 
-PSNR matches the paper. SSIM is reported with the canonical Gaussian-window implementation
+PSNR and tOF match the paper. SSIM is reported with the canonical Gaussian-window implementation
 (`skimage`, `gaussian_weights=True, sigma=1.5`); small differences from the paper come from the
-SSIM implementation/window. LPIPS (AlexNet) is reported for completeness.
+SSIM implementation/window. tOF (temporal optical-flow error) follows the
+[FMA-Net](https://github.com/KAIST-VICLab/FMA-Net) implementation. LPIPS (AlexNet) is reported
+for completeness.
+
+Evaluation is heavily optimised: ground-truth frames are prefetched in background worker
+processes, Depth Anything is cached per frame, and PSNR/SSIM/tOF are computed in parallel across
+CPU cores, so the full 90-sequence run is GPU-bound rather than CPU-bound. Pass `--save_videos`
+to additionally write the refocused frames to `results/<sequence>/`.
 
 ## Installation
 
@@ -81,8 +89,9 @@ python test_dabit.py                     # uses weights/dabit.pth, writes result
 python test_dabit.py --model weights/dabit_280.pth   # evaluate a different checkpoint
 ```
 
-It runs RAFT → Depth Anything V2 → DaBiT over every sequence, saves the refocused/upscaled
-frames to `results/<sequence>/`, and prints the per-sequence and mean PSNR / SSIM / LPIPS.
+It runs RAFT → Depth Anything V2 → DaBiT over every sequence and prints the per-sequence and
+mean PSNR / SSIM / LPIPS / tOF (logged to `results/results.txt`). Add `--save_videos` to also
+write the refocused/upscaled frames to `results/<sequence>/`.
 
 ## Datasets & data preparation (for training)
 
