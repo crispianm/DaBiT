@@ -16,6 +16,7 @@ from torch.nn import functional
 from core.dataset import TestDataset
 from torch.utils.data import DataLoader
 from core.metrics import calc_psnr_and_ssim, calculate_tof
+from core.utils import get_ref_index
 from model.modules.flow_comp_raft import RAFT_bi
 from model.dabit import DaBiT
 from model.modules.depth_anything_v2.dpt import DepthAnythingV2
@@ -47,37 +48,6 @@ def _compute_chunk_metrics(task):
             tof = calculate_tof(comp_sub[p - 1], comp_sub[p], gt_sub[p - 1], gt_sub[p])
         out.append((g, psnr, ssim, tof))
     return out
-
-
-# def get_ref_index(mid_neighbor_id, neighbor_ids, length, ref_stride=10, ref_num=-1):
-def get_ref_index(length, sample_length, local_idx):
-
-        smaller_idx = sorted([i for i in range(length) if i < min(local_idx)])
-        larger_idx = sorted([i for i in range(length) if i > max(local_idx)])
-
-        total_available = len(smaller_idx) + len(larger_idx)
-        smaller_samples = round(sample_length * len(smaller_idx) / total_available)
-        larger_samples = sample_length - smaller_samples
-
-        smaller_step = len(smaller_idx) // smaller_samples if smaller_samples > 0 else 0
-        larger_step = len(larger_idx) // larger_samples if larger_samples > 0 else 0
-
-        ref_idx = []
-        if smaller_samples > 0:
-            smaller_step = len(smaller_idx) // smaller_samples
-            start_idx = smaller_step // 2 
-            ref_idx.extend([smaller_idx[start_idx + i * smaller_step] for i in range(smaller_samples)])
-
-        if larger_samples > 0:
-            larger_step = len(larger_idx) // larger_samples
-            start_idx = (larger_step - 1) // 2 
-            ref_idx.extend([larger_idx[start_idx + i * larger_step] for i in range(larger_samples)])
-
-        return sorted(ref_idx)
-
-
-
-
 
 
 if __name__ == "__main__":
@@ -138,6 +108,19 @@ if __name__ == "__main__":
         default="./weights/dabit.pth",
         help="Path to the trained DaBiT model.",
     )
+    parser.add_argument(
+        "--amp",
+        action="store_true",
+        help="Enable mixed-precision (autocast) inference for the DaBiT model and "
+        "depth estimator. Faster, but metrics differ slightly from the fp32 reference.",
+    )
+    parser.add_argument(
+        "--amp_dtype",
+        type=str,
+        default="bf16",
+        choices=["bf16", "fp16"],
+        help="Autocast dtype used by --amp (default: bf16).",
+    )
 
     args = parser.parse_args()
     if not os.path.exists(args.output):
@@ -177,7 +160,6 @@ if __name__ == "__main__":
     ##############################################
 
     dabit = DaBiT()
-    # dabit.load_state_dict(torch.load("./weights/dabit.pth", weights_only=True))
     dabit.load_state_dict(torch.load(args.model, weights_only=True))
     for p in dabit.parameters():
         p.requires_grad = False
@@ -194,14 +176,22 @@ if __name__ == "__main__":
     # / DaBiT / LPIPS build throwaway graphs (faster, lower VRAM, identical values).
     torch.set_grad_enabled(False)
 
+    # Optional mixed-precision fast mode. Reusable autocast context applied to the
+    # heavy DaBiT forward and depth estimator; RAFT is deliberately left in fp32
+    # (flow accuracy), as is LPIPS. When --amp is off this is a transparent no-op,
+    # so the default run is bit-for-bit the fp32 reference.
+    amp_dtype = torch.bfloat16 if args.amp_dtype == "bf16" else torch.float16
+    amp = torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=args.amp)
+    if args.amp:
+        print(f"AMP inference enabled ({args.amp_dtype}).")
+
     ##############################################
     # Begin Testing Loop
     ##############################################
 
     metrics = ["PSNR", "SSIM", "LPIPS", "tOF", "Time"]
     results_dict = {k: [] for k in metrics}
-    results_dict["Frames"] = []
-    logfile = open("./results/results.txt", "a")
+    logfile = open(os.path.join(args.output, "results.txt"), "a")
     logfile.write(f"Model: {args.model}")
 
     # Background-process pool for the CPU-bound metrics (PSNR/SSIM/tOF). The
@@ -213,7 +203,7 @@ if __name__ == "__main__":
 
     # The DataLoader decodes/resizes the next video in background worker
     # processes (TestDataset now returns CPU tensors) while the GPU is busy.
-    test_ds = TestDataset(device, args.input)
+    test_ds = TestDataset(args.input)
     valid_loader = DataLoader(
         dataset=test_ds,
         batch_size=1,
@@ -239,14 +229,9 @@ if __name__ == "__main__":
         out_h, out_w = input_size[0] * 2, input_size[1] * 2
 
 
-        # Create binary masks and dilated masks
-        binary_masks = (
-            (blur_maps[0] > torch.min(blur_maps)).float()
-        ).unsqueeze(0)
-        binary_masks = torch.stack(
-            [functional.max_pool2d(batch, kernel_size=3, stride=1, padding=1) for batch in binary_masks]
-        )
-        binary_masks = torch.zeros_like(binary_masks) + 1
+        # The whole frame is treated as "to be restored" (focal blur affects
+        # every pixel), so the propagation masks are all-ones.
+        binary_masks = torch.ones_like(blur_maps)
 
         video_length = input_tensors.shape[1]
         pbar.set_description(f"Processing: {video_name[0]} ({video_length} frames)")
@@ -348,7 +333,7 @@ if __name__ == "__main__":
         # identical but evaluates each frame's depth exactly once.
         depth_bs = 12
         frame_depths = [None] * video_length
-        with torch.no_grad():
+        with torch.no_grad(), amp:
             for s in range(0, video_length, depth_bs):
                 e = min(video_length, s + depth_bs)
                 depth_batch = depth_model.preprocess_tensor(updated_frames[0, s:e])
@@ -366,34 +351,18 @@ if __name__ == "__main__":
         comp_frames = [None] * video_length
 
         neighbor_stride = args.neighbor_length // 2
-        if video_length > args.subvideo_length:
-            ref_num = args.subvideo_length // args.ref_stride
-        else:
-            ref_num = -1
 
         ##############################################
         # Run Model
         ##############################################
-        neighbor_ids = None
         for f in tqdm(range(0, video_length, neighbor_stride)[:-1], leave=False):
 
-
             if f + 10 > video_length:
-                start = video_length - 10
-                end = video_length
+                start, end = video_length - 10, video_length
             else:
-                start = f
-                end = f + 10
-            
-            current_list = list(range(start, end))
-            if current_list != neighbor_ids: 
-                neighbor_ids = current_list
-
-
+                start, end = f, f + 10
+            neighbor_ids = list(range(start, end))
             ref_ids = get_ref_index(video_length, 6, neighbor_ids)
-            selected_index = sorted(neighbor_ids + ref_ids)
-            local_index = [i for i in range(len(selected_index)) if selected_index[i] in neighbor_ids]
-
 
             selected_imgs = updated_frames[:, neighbor_ids + ref_ids, :, :, :]
             selected_blur_maps = blur_maps[:, neighbor_ids + ref_ids, :, :, :]
@@ -403,16 +372,9 @@ if __name__ == "__main__":
             # ---- depth prediction (cached, see precompute above) ----
             selected_depths = frame_depths[neighbor_ids + ref_ids].unsqueeze(0)
 
-
             l_t = len(neighbor_ids)
 
-            # print_summary(selected_imgs, "selected_imgs")
-            # print_summary(selected_depths, "selected_depths")
-            # print_summary(selected_blur_maps, "selected_blur_maps")
-            # print_summary(selected_update_masks, "selected_update_masks")
-            # print("local_index: ", local_index)
-
-            with torch.no_grad():
+            with torch.no_grad(), amp:
                 ori_pred_img = dabit(
                     selected_imgs,
                     selected_depths,
@@ -421,6 +383,7 @@ if __name__ == "__main__":
                     selected_update_masks,
                     l_t,
                 )
+            ori_pred_img = ori_pred_img.float()
             pred_img = ori_pred_img.view(-1, 3, out_h, out_w).permute(0, 2, 3, 1)
             pred_img = (pred_img).clamp(0, 1)
 
@@ -437,7 +400,6 @@ if __name__ == "__main__":
 
                 comp_frames[idx] = comp_frames[idx].astype(np.uint8)
 
-            torch.cuda.empty_cache()
         video_end_time = time.time()
 
         avg_runtime = (video_end_time - video_start_time) / video_length
@@ -450,7 +412,7 @@ if __name__ == "__main__":
         if args.save_videos:
 
             # Create output directory
-            save_root = f"./results/{str(video_name[0])}"
+            save_root = os.path.join(args.output, str(video_name[0]))
             os.makedirs(save_root, exist_ok=True)
 
             for comp_frame in range(len(comp_frames)):
@@ -458,27 +420,6 @@ if __name__ == "__main__":
                 # Save images
                 img_for_save = cv2.cvtColor(comp_frames[comp_frame], cv2.COLOR_BGR2RGB)
                 cv2.imwrite(os.path.join(save_root, f"frame_{comp_frame}.png"), img_for_save)
-
-
-            # masked_frame_for_save = []
-            # for i in range(len(input_tensors[0])):
-            #     img = np.array(
-            #         (input_tensors[0][i]).cpu().permute(1, 2, 0) * 255
-            #     )
-            #     masked_frame_for_save.append(img.astype(np.uint8))
-
-            # imageio.mimwrite(
-            #     os.path.join(save_root, "masked_in.mp4"),
-            #     masked_frame_for_save,
-            # )
-
-            # imageio.mimwrite(
-            #     os.path.join(save_root, "refocused_out.mp4"),
-            #     comp_frames,
-            # )
-
-            # pbar.set_description(f"Videos saved.")
-            # torch.cuda.empty_cache()
 
         ###########################################
         # compute metrics

@@ -1,18 +1,9 @@
 import os
-import io
 import cv2
 import random
 import numpy as np
-from PIL import Image, ImageOps
-import zipfile
-import math
 
 import torch
-import matplotlib
-import matplotlib.patches as patches
-from matplotlib.path import Path
-from matplotlib import pyplot as plt
-from torchvision import transforms
 import torchvision.transforms.functional as F
 import torch.nn as nn
 
@@ -20,18 +11,38 @@ import pytorch_wavelets as pw
 
 
 # ###########################################################################
-# Directory IO
+# Frame sampling
 # ###########################################################################
 
 
-def read_dirnames_under_root(root_dir):
-    dirnames = [
-        name
-        for i, name in enumerate(sorted(os.listdir(root_dir)))
-        if os.path.isdir(os.path.join(root_dir, name))
-    ]
-    print(f"Reading directories under {root_dir}, num: {len(dirnames)}")
-    return dirnames
+def get_ref_index(length, sample_length, local_idx):
+    """Pick `sample_length` global reference frames outside the local window,
+    spread evenly before/after it in proportion to how many frames lie on each
+    side. Used by training, validation and evaluation alike."""
+
+    smaller_idx = sorted([i for i in range(length) if i < min(local_idx)])
+    larger_idx = sorted([i for i in range(length) if i > max(local_idx)])
+
+    total_available = len(smaller_idx) + len(larger_idx)
+    smaller_samples = round(sample_length * len(smaller_idx) / total_available)
+    larger_samples = sample_length - smaller_samples
+
+    ref_idx = []
+    if smaller_samples > 0:
+        smaller_step = len(smaller_idx) // smaller_samples
+        start_idx = smaller_step // 2
+        ref_idx.extend(
+            [smaller_idx[start_idx + i * smaller_step] for i in range(smaller_samples)]
+        )
+
+    if larger_samples > 0:
+        larger_step = len(larger_idx) // larger_samples
+        start_idx = (larger_step - 1) // 2
+        ref_idx.extend(
+            [larger_idx[start_idx + i * larger_step] for i in range(larger_samples)]
+        )
+
+    return sorted(ref_idx)
 
 
 # ###########################################################################
@@ -75,21 +86,71 @@ def get_bk_amount(depth_value, min_blur, max_blur, focus_range, focal_point):
 
 
 def gaussian_blur(input_tensor, bk, sigma):
-    """Gaussian blur generator"""
-    blur_transform = transforms.GaussianBlur(kernel_size=bk, sigma=sigma)
-    blurred_tensor = blur_transform(input_tensor)
-    return blurred_tensor.int()
+    """Gaussian blur via the functional API (no per-call module construction)."""
+    return F.gaussian_blur(input_tensor, kernel_size=bk, sigma=float(sigma)).int()
 
 
-def normalize(x):
-    if x.dtype != torch.float32:
-        x = x.float()
-    transfrm = transforms.Compose(
-        [
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
-    )
-    return transfrm(x)
+DEPTH_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".npz", ".npy", ".pfm", ".exr")
+
+
+def load_depth(depth_dir, frame_name, frame_idx, depth_files):
+    """Load a depth map for a frame, accepting any common on-disk format.
+
+    Resolution order:
+      1. name-based: ``<base>_depth.{png,npz,npy}`` then ``<base>.{png,npz,npy}``
+      2. index-based: ``depth_files[frame_idx]`` (e.g. YouTube-VOS ``00000.jpg``
+         <-> ``depth_0000.npz``, aligned by sorted order).
+
+    Returns a float32 numpy array (H, W) normalised to [0, 255], in the repo's
+    convention (closer = brighter, matching get_depths.py). 8-bit image depths
+    are kept as-is; raw arrays (npz/npy) and >8-bit images are min-max scaled,
+    and raw arrays are inverted to match the image-depth convention.
+    """
+    base = os.path.splitext(frame_name)[0]
+    path = None
+    for cand in (
+        base + "_depth.png", base + "_depth.npz", base + "_depth.npy",
+        base + ".png", base + ".npz", base + ".npy",
+    ):
+        p = os.path.join(depth_dir, cand)
+        if os.path.exists(p):
+            path = p
+            break
+    if path is None:  # fall back to index alignment (ignore stray/marker files)
+        valid = [f for f in depth_files if os.path.splitext(f)[1].lower() in DEPTH_EXTS]
+        if not valid:
+            raise FileNotFoundError(f"No depth files in {depth_dir}")
+        path = os.path.join(depth_dir, valid[min(frame_idx, len(valid) - 1)])
+
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".npz":
+        data = np.load(path)
+        key = "depth" if "depth" in data.files else data.files[0]
+        depth = np.asarray(data[key]).astype(np.float32)
+        raw = True
+    elif ext == ".npy":
+        depth = np.load(path).astype(np.float32)
+        raw = True
+    else:  # png / jpg / tiff, 8- or 16-bit
+        depth = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        if depth is None:
+            raise FileNotFoundError(f"Could not read depth: {path}")
+        if depth.ndim == 3:
+            depth = cv2.cvtColor(depth, cv2.COLOR_BGR2GRAY)
+        depth = depth.astype(np.float32)
+        raw = False
+
+    depth = np.squeeze(depth)
+
+    # Normalise raw arrays and any >8-bit images to [0, 255]; leave canonical
+    # 8-bit image depths untouched so existing datasets are unchanged.
+    if raw or depth.max() > 255:
+        dmin, dmax = float(depth.min()), float(depth.max())
+        depth = (depth - dmin) / (dmax - dmin + 1e-8) * 255.0
+    if raw:
+        depth = 255.0 - depth  # closer = brighter, matching get_depths.py
+
+    return depth
 
 
 def get_wavelet(img):
@@ -123,7 +184,7 @@ def get_blur_map(img, depth):
 
         blur_map[rounded_depth == d] = wavelet_sum
 
-    output = 1 - (blur_map / torch.max(blur_map))
+    output = 1 - (blur_map / (torch.max(blur_map) + 1e-8))
 
     return output
 
@@ -163,6 +224,11 @@ def blur_with_depth(
     step = 255 / num_layers
     assert step > 1, "Depth map and img should be normalized to [0, 255]"
 
+    # Each depth slab uses one Gaussian kernel size; many slabs share a size, so
+    # blur the frame once per distinct size and reuse it (same result, far fewer
+    # convolutions than blurring once per layer).
+    blur_cache = {}
+
     for depth_value in torch.arange(0, 255, step):
         mask = torch.zeros(depth.shape).to(depth.device)
         if depth_value == 0:
@@ -176,10 +242,11 @@ def blur_with_depth(
         if blur_amount == 1:
             masked_img = img * mask
         else:
-            blurred_slice = gaussian_blur(img, blur_amount, sigma)
-            masked_img = blurred_slice * mask
+            if blur_amount not in blur_cache:
+                blur_cache[blur_amount] = gaussian_blur(img, blur_amount, sigma)
+            masked_img = blur_cache[blur_amount] * mask
 
         out = torch.add(out, masked_img)
 
-    blurred_img = (out - out.min()) / (out.max() - out.min()) * 255
+    blurred_img = (out - out.min()) / (out.max() - out.min() + 1e-8) * 255
     return blurred_img

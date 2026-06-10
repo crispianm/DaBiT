@@ -35,6 +35,10 @@ SSIM implementation/window. tOF (temporal optical-flow error) follows the
 [FMA-Net](https://github.com/KAIST-VICLab/FMA-Net) implementation. LPIPS (AlexNet) is reported
 for completeness.
 
+Retraining from scratch with this repository (`train.py`, `configs/dabit.json`) also reproduces
+the paper: a 250k-iteration run reaches **28.62 PSNR / 0.844 SSIM / 1.260 tOF / 0.240 LPIPS**
+on the same benchmark.
+
 Evaluation is heavily optimised: ground-truth frames are prefetched in background worker
 processes, Depth Anything is cached per frame, and PSNR/SSIM/tOF are computed in parallel across
 CPU cores, so the full 90-sequence run is GPU-bound rather than CPU-bound. Pass `--save_videos`
@@ -105,21 +109,23 @@ the per-sequence parameters in [`davis_blur.csv`](davis_blur.csv).
 | [`get_blur_maps.py`](get_blur_maps.py) | Generate per-frame focal-blur maps |
 | [`create_davis_blur.py`](create_davis_blur.py) | Build the DAVIS-Blur test set from DAVIS + `davis_blur.csv` |
 
-`core/dataset.py:TrainDataset` expects each dataset's `video_root` to contain `frames/<seq>/...`
-and `depths/<seq>/...`. On the training machine the datasets live under
-`/mnt/DATA/dabit_training_data/` and the paths are set in [`configs/dabit.json`](configs/dabit.json):
+`core/dataset.py:TrainDataset` reads `frames/<seq>/...` and `depths/<seq>/...` under each
+dataset's `video_root` by default; datasets whose frames and depths live in separate trees
+(e.g. YouTube-VOS) can override either path with the `frames_root`/`depths_root` config keys —
+no symlinks or copies needed. Depth maps are accepted in any common format (8/16-bit
+PNG/JPG/TIFF, or raw `.npy`/`.npz` arrays), matched to frames by name (`<frame>_depth.png`,
+`<frame>.npz`, ...) or, failing that, by sorted index. Paths are set in
+[`configs/dabit.json`](configs/dabit.json), e.g.:
 
 ```
 /mnt/DATA/dabit_training_data/
-   |- bvidvc/        {frames,depths}/<seq>/...          # matches TrainDataset directly
-   |- davis/         {frames,depths}/<seq>/...
-   |- youtube-vos/   train_all_frames/JPEGImages/<seq>/...   # frames
-   |- youtube-vos-depth/ vos-output/train_all_frames/depth/  # depths (separate tree)
+   |- bvidvc/        {frames,depths}/<seq>/...                # default layout
+   |- youtube-vos/   train_all_frames/JPEGImages/<seq>/...    # frames_root
+   |- youtube-vos-depth/ vos-output/train_all_frames/depth/   # depths_root (.npz)
 ```
 
-> **Note:** YouTube-VOS frames and depths live in separate trees, so its `video_root` needs
-> `frames/` and `depths/` symlinks (or a copy) laid out as above before training. BVI-DVC and
-> DAVIS already match the expected layout.
+> **Warning:** do **not** train on DAVIS — DAVIS-Blur (the test set) is built from the same
+> sequences, so adding it to training leaks the benchmark.
 
 ## Training
 
@@ -127,10 +133,17 @@ and `depths/<seq>/...`. On the training machine the datasets live under
 python train.py -c configs/dabit.json
 ```
 
-Key settings in `configs/dabit.json`: AdamW, lr 1e-4, batch size 1, 750k iterations,
-CosineAnnealingLR, 432×240 crops, 10 local + 6 reference frames. Checkpoints are written to
-`out_dir`. (The released `weights/dabit.pth` is provided, so retraining is not required to
-reproduce the results.)
+`configs/dabit.json` follows the paper recipe: lr 1e-4, batch size 1, **300k iterations**,
+432×240 inputs (864×480 ground truth for the 2× super-resolution head), 10 local + 6 reference
+frames, focal blur synthesised on the fly from the depth maps. Checkpoints and TensorBoard logs
+are written to `out_dir`; a small DAVIS-Blur subset is validated every `val_freq` iterations.
+
+For robustness the released trainer deviates from the paper in a few documented ways: AdamW
+(instead of Adam) with cosine LR decay + linear warmup, bf16 mixed precision, gradient
+clipping and non-finite loss/grad guards. Set `trainer.amp` to `false` and
+`trainer.scheduler` accordingly to get closer to the original fixed-LR fp32 recipe. (The
+released `weights/dabit.pth` is provided, so retraining is not required to reproduce the
+results.)
 
 ## Model
 

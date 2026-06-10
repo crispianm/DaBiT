@@ -1,17 +1,21 @@
 import os
 import glob
+import argparse
 import torch
 from tqdm import tqdm
-import numpy as np
 
-from core.utils import get_blur_map, get_wavelet, blur_with_depth
+from core.utils import get_blur_map, blur_with_depth
 import cv2
 import csv
-import random
 
-out_dir = "./blur_tests"
-davis_path = "/home/wg19671/Documents/davis/frames"
-davis_depth_path = "/home/wg19671/Documents/davis/depths"
+"""
+Build the DAVIS-Blur test set from DAVIS-2017 frames + precomputed depths
+(see get_depths.py), using the per-sequence blur parameters in davis_blur.csv.
+
+Example usage:
+python create_davis_blur.py --frames ./davis/frames --depths ./davis/depths
+"""
+
 height = 240
 width = 432
 
@@ -67,7 +71,7 @@ def create_davis_blur_test(davis_path, davis_depth_path, out_dir):
             depth = cv2.imread(depth_files[frame_idx], cv2.IMREAD_GRAYSCALE)
             depth = cv2.resize(depth, (width, height))
 
-            img = torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR)).permute(2, 0, 1).float() 
+            img = torch.tensor(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)).permute(2, 0, 1).float() 
             depth = torch.tensor(depth).float().unsqueeze(0)
 
 
@@ -90,19 +94,15 @@ def create_davis_blur_test(davis_path, davis_depth_path, out_dir):
             cv2.imwrite(os.path.join(mask_dir, f"{frame_idx:05}_mask.png"), blur_mask.permute(1,2,0).numpy() * 255)
 
 if __name__ == "__main__":
-    create_davis_blur_test(davis_path, davis_depth_path, out_dir)
+    parser = argparse.ArgumentParser(
+        description="Build the DAVIS-Blur test set from DAVIS frames and depths."
+    )
+    parser.add_argument("--frames", type=str, required=True,
+                        help="DAVIS frames root (one folder per sequence).")
+    parser.add_argument("--depths", type=str, required=True,
+                        help="DAVIS depths root (from get_depths.py).")
+    parser.add_argument("-o", "--out_dir", type=str, default="./blur_tests",
+                        help="Output root for the test set (default: ./blur_tests).")
+    args = parser.parse_args()
 
-    # video_list = sorted(os.listdir(davis_path))
-    # csv_file = "davis_blur.csv"
-
-    # with open(csv_file, mode='w', newline='') as file:
-    #     writer = csv.writer(file)
-    #     writer.writerow(["video_name", "max_blur", "window_size", "sigma", "focal_point", "dfdt"])
-
-    #     for video_name in video_list:
-    #         max_blur = random.choice(range(3, 17, 2))
-    #         window_size = random.randint(60, 120)
-    #         sigma = np.round(random.uniform(3, 6), 2)
-    #         focal_point = random.randint(0, 255)
-    #         dfdt = random.randint(1, 5)
-    #         writer.writerow([video_name, max_blur, window_size, sigma, focal_point, dfdt])
+    create_davis_blur_test(args.frames, args.depths, args.out_dir)

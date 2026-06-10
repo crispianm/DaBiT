@@ -5,24 +5,32 @@ import numpy as np
 import cv2
 
 import torch
-import torchvision.transforms as transforms
-import torchvision.io as io
-
 import torchvision.transforms.functional as F
 
 from core.utils import (
     blur_with_depth,
     get_random_focus_depths,
     get_blur_map,
+    get_ref_index,
+    load_depth,
 )
 
 
 class TrainDataset(torch.utils.data.Dataset):
-    def __init__(self, args: dict, dataset: dict, device):
+    def __init__(self, args: dict, dataset: dict):
         self.args = args
-        self.video_root = os.path.join(dataset["video_root"], "frames")
-        self.depth_root = os.path.join(dataset["video_root"], "depths")
-        self.device = device
+        # Frames/depths default to <video_root>/frames and <video_root>/depths,
+        # but can be overridden per dataset (e.g. YouTube-VOS keeps depths in a
+        # separate tree) via frames_root/depths_root or frames_subdir/depths_subdir.
+        video_root = dataset["video_root"]
+        self.video_root = dataset.get(
+            "frames_root",
+            os.path.join(video_root, dataset.get("frames_subdir", "frames")),
+        )
+        self.depth_root = dataset.get(
+            "depths_root",
+            os.path.join(video_root, dataset.get("depths_subdir", "depths")),
+        )
 
         self.num_local_frames = args["num_local_frames"]
         self.num_ref_frames = args["num_ref_frames"]
@@ -33,6 +41,7 @@ class TrainDataset(torch.utils.data.Dataset):
 
         self.video_dict = {}
         self.frame_dict = {}
+        self.depth_dict = {}
 
         for name in self.video_names:
             frame_list = sorted(os.listdir(os.path.join(self.video_root, name)))
@@ -40,7 +49,15 @@ class TrainDataset(torch.utils.data.Dataset):
             if length > self.num_local_frames + self.num_ref_frames:
                 self.video_dict[name] = length
                 self.frame_dict[name] = frame_list
-        self.video_names = list(self.video_dict.keys()) 
+                depth_path = os.path.join(self.depth_root, name)
+                self.depth_dict[name] = (
+                    sorted(os.listdir(depth_path)) if os.path.isdir(depth_path) else []
+                )
+        self.video_names = list(self.video_dict.keys())
+        print(
+            f"  {dataset.get('name', '?')}: {len(self.video_names)} sequences"
+            f" (frames: {self.video_root})"
+        )
 
     def __len__(self):
         return len(self.video_names)
@@ -55,29 +72,7 @@ class TrainDataset(torch.utils.data.Dataset):
     
     
     def _ref_index(self, length, sample_length, local_idx):
-
-        smaller_idx = sorted([i for i in range(length) if i < min(local_idx)])
-        larger_idx = sorted([i for i in range(length) if i > max(local_idx)])
-
-        total_available = len(smaller_idx) + len(larger_idx)
-        smaller_samples = round(sample_length * len(smaller_idx) / total_available)
-        larger_samples = sample_length - smaller_samples
-
-        smaller_step = len(smaller_idx) // smaller_samples if smaller_samples > 0 else 0
-        larger_step = len(larger_idx) // larger_samples if larger_samples > 0 else 0
-
-        ref_idx = []
-        if smaller_samples > 0:
-            smaller_step = len(smaller_idx) // smaller_samples
-            start_idx = smaller_step // 2 
-            ref_idx.extend([smaller_idx[start_idx + i * smaller_step] for i in range(smaller_samples)])
-
-        if larger_samples > 0:
-            larger_step = len(larger_idx) // larger_samples
-            start_idx = (larger_step - 1) // 2 
-            ref_idx.extend([larger_idx[start_idx + i * larger_step] for i in range(larger_samples)])
-
-        return sorted(ref_idx)
+        return get_ref_index(length, sample_length, local_idx)
     
 
     def __getitem__(self, index):
@@ -106,23 +101,28 @@ class TrainDataset(torch.utils.data.Dataset):
 
         for idx in selected_index:
 
-            # Load GT Image and resized image
+            # Load GT Image and resized image (kept on CPU so DataLoader workers
+            # can build samples in parallel; the trainer moves them to the GPU)
             frame_list = self.frame_dict[video_name]
             img_path = os.path.join(self.video_root, video_name, frame_list[idx])
             img = cv2.imread(img_path)
             img = cv2.resize(img, (self.ori_w, self.ori_h))
-            gt_frames.append(torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR)).permute(2, 0, 1).to(self.device))
+            gt_frames.append(torch.tensor(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)).permute(2, 0, 1))
             img = cv2.resize(img, (self.w, self.h))
-            resized_frames.append(torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR)).permute(2, 0, 1).to(self.device))
+            resized_frames.append(torch.tensor(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)).permute(2, 0, 1))
 
-            # Load Depth Image and resize
-            depth_path = os.path.join(self.depth_root, video_name, frame_list[idx][:-4] + "_depth.png")
-            gt_depth = cv2.imread(depth_path, cv2.IMREAD_GRAYSCALE)
+            # Load Depth (any format: png/jpg/16-bit/npz/npy) and resize
+            gt_depth = load_depth(
+                os.path.join(self.depth_root, video_name),
+                frame_list[idx],
+                idx,
+                self.depth_dict[video_name],
+            )
             gt_depth = cv2.resize(gt_depth, (self.w, self.h))
 
             # Convert numpy arrays to tensors
-            img = torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR)).permute(2, 0, 1).float().to(self.device)
-            gt_depth = torch.tensor(gt_depth).float().to(self.device)
+            img = torch.tensor(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)).permute(2, 0, 1).float()
+            gt_depth = torch.tensor(gt_depth).float()
 
             if idx in selected_local_index:
                 # Create Blurred Image
@@ -187,18 +187,13 @@ class TrainDataset(torch.utils.data.Dataset):
 
 
 class TestDataset(torch.utils.data.Dataset):
-    def __init__(self, device, dataset):
+    def __init__(self, dataset):
         self.video_root = dataset
-        self.device = device
 
         self.ori_w, self.ori_h = (864, 480)
         self.w, self.h = self.ori_w // 2, self.ori_h // 2
 
         self.video_names = sorted(os.listdir(self.video_root))
-
-        self.video_dict = {}
-        self.frame_dict = {}
-
 
     def __len__(self):
         return len(self.video_names)
@@ -219,18 +214,17 @@ class TestDataset(torch.utils.data.Dataset):
         maps_processed = []
 
         # Tensors are built on CPU so the DataLoader can decode/resize the next
-        # video in background worker processes; test_dabit.py moves them to the
-        # GPU. (TrainDataset still builds on-device for the training loop.)
+        # video in background worker processes; the caller moves them to the GPU.
         for frame in gt_frames:
             img = cv2.imread(os.path.join(self.video_root, video_name, "gt", frame))
             img = cv2.resize(img, (self.ori_w, self.ori_h))
-            img = torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR)).permute(2, 0, 1)
+            img = torch.tensor(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)).permute(2, 0, 1)
             gt_frames_processed.append(img)
 
         for frame in input_frames:
             img = cv2.imread(os.path.join(self.video_root, video_name, "frames", frame))
             img = cv2.resize(img, (self.w, self.h))
-            img = torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR)).permute(2, 0, 1)
+            img = torch.tensor(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)).permute(2, 0, 1)
             input_frames_processed.append(img)
 
         for mask in masks:

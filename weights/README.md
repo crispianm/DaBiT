@@ -1,14 +1,15 @@
 # Weights
 
-Put the downloaded pre-trained models to this folder.
+Put the downloaded pretrained models in this folder (see the GitHub Release
+assets). Evaluation needs the first three:
 
-The directory structure will be arranged as:
 ```
 weights
-   |- raft-things.pth
-   |- recurrent_flow_completion.pth
-   |- ProPainter.pth
-   |- i3d_rgb_imagenet.pt (for evaluating VFID metric)
-   |- depth_completion.pth
+   |- dabit.pth                     # trained DaBiT model (~182 MB)
+   |- raft.pth                      # RAFT optical flow (~21 MB)
+   |- depth_anything_v2_vits.pth    # Depth Anything V2, ViT-S (~95 MB)
+   |- dabit_280.pth                 # (optional) 280k-iteration checkpoint
+   |- depth_anything_v2_vitb.pth    # (optional) ViT-B, for get_depths.py
+   |- depth_anything_v2_vitl.pth    # (optional) ViT-L, for get_depths.py
    |- README.md
 ```

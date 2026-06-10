@@ -101,13 +101,10 @@ if __name__ == "__main__":
         'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
         'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
         'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
-        'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
     }
 
-    encoder = 'vitl'
-
-    depth_model = DepthAnythingV2(**model_configs[encoder])
-    depth_model.load_state_dict(torch.load(f'./weights/depth_anything_v2_{encoder}.pth', map_location='cpu', weights_only=True))
+    depth_model = DepthAnythingV2(**model_configs[args.encoder])
+    depth_model.load_state_dict(torch.load(f'./weights/depth_anything_v2_{args.encoder}.pth', map_location='cpu', weights_only=True))
     depth_model = depth_model.to(device).eval()
 
-    process_folder(args.input, args.output, depth_model, args.device)
+    process_folder(args.input, args.output, depth_model, device)

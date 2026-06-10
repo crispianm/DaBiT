@@ -5,13 +5,13 @@
         "w_train": 864,
         "h_train": 480,
         "num_local_frames": 10,
-        "num_ref_frames": 6,
-        "load_flow": 1,
-        "use_blur_masks": 1
+        "num_ref_frames": 6
     },
     "youtube-vos": {
         "name": "youtube-vos",
-        "video_root": "/mnt/DATA/dabit_training_data/youtube-vos"
+        "video_root": "/mnt/DATA/dabit_training_data/youtube-vos",
+        "frames_root": "/mnt/DATA/dabit_training_data/youtube-vos/train_all_frames/JPEGImages",
+        "depths_root": "/mnt/DATA/dabit_training_data/youtube-vos-depth/vos-output/train_all_frames/depth"
     },
     "bvidvc": {
         "name": "bvidvc",
@@ -20,29 +20,34 @@
     "losses": {
         "blur_weight": 1,
         "clear_weight": 1,
-        "flow_weight": 1,
-        "depth_weight": 1,
-        "adversarial_weight": 0.01,
-        "GAN_LOSS": "hinge",
-        "perceptual_weight": 0,
-        "kd_weight": 0,
         "sr_weight": 1
     },
     "net": "dabit",
     "interp_mode": "nearest",
+    "datasets": ["bvidvc", "youtube-vos"],
     "trainer": {
         "version": "trainer",
         "type": "AdamW",
+        "amp": true,
+        "amp_dtype": "bfloat16",
         "lr": 1e-4,
+        "weight_decay": 0.01,
+        "grad_clip": 1.0,
+        "warmup_iters": 1000,
         "batch_size": 1,
-        "num_workers": 0,
+        "num_workers": 10,
+        "prefetch_factor": 2,
         "num_prefetch_queue": 16,
-        "img_freq": 500,
+        "img_freq": 1000,
         "log_freq": 50,
         "save_freq": 10000,
-        "iterations": 750e3,
+        "val_freq": 10000,
+        "val_num_videos": 8,
+        "iterations": 300e3,
         "scheduler": {
-            "type": "CosineAnnealingLR"
+            "type": "CosineAnnealingLR",
+            "eta_min": 1e-6,
+            "warmup_start_factor": 0.01
         }
     }
 }
