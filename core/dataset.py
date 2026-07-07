@@ -47,12 +47,15 @@ class TrainDataset(torch.utils.data.Dataset):
             frame_list = sorted(os.listdir(os.path.join(self.video_root, name)))
             length = len(frame_list)
             if length > self.num_local_frames + self.num_ref_frames:
-                self.video_dict[name] = length
-                self.frame_dict[name] = frame_list
                 depth_path = os.path.join(self.depth_root, name)
-                self.depth_dict[name] = (
+                depth_files = (
                     sorted(os.listdir(depth_path)) if os.path.isdir(depth_path) else []
                 )
+                if not depth_files:
+                    continue  # no depths for this video; skip rather than crash mid-training
+                self.video_dict[name] = length
+                self.frame_dict[name] = frame_list
+                self.depth_dict[name] = depth_files
         self.video_names = list(self.video_dict.keys())
         print(
             f"  {dataset.get('name', '?')}: {len(self.video_names)} sequences"
