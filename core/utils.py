@@ -131,27 +131,14 @@ def load_depth(depth_dir, frame_name, frame_idx, depth_files):
     elif ext == ".npy":
         depth = np.load(path).astype(np.float32)
         raw = True
-    else:  # png / jpg / tiff: 8/16-bit, or float32 packed into RGBA bytes
+    else:  # png / jpg / tiff, 8- or 16-bit
         depth = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         if depth is None:
             raise FileNotFoundError(f"Could not read depth: {path}")
-        if depth.ndim == 3 and depth.shape[2] == 4 and depth.dtype == np.uint8:
-            # TartanAir-style: float32 metric depth (m) packed into RGBA bytes.
-            # Use inverse depth so the sky/far plane does not compress the
-            # scene into a narrow band; raw=True then normalizes + inverts it
-            # into the same convention as the npz/npy DepthAnything outputs.
-            depth = np.squeeze(depth.view("<f4")).astype(np.float32)
-            depth = 1.0 / np.maximum(np.nan_to_num(depth, nan=1e6, posinf=1e6), 1e-3)
-            raw = True
-        elif depth.dtype == np.uint16:
-            # 16-bit metric depth (e.g. vKITTI, in cm): same inverse-depth treatment.
-            depth = 1.0 / np.maximum(depth.astype(np.float32), 1.0)
-            raw = True
-        else:
-            if depth.ndim == 3:
-                depth = cv2.cvtColor(depth, cv2.COLOR_BGR2GRAY)
-            depth = depth.astype(np.float32)
-            raw = False
+        if depth.ndim == 3:
+            depth = cv2.cvtColor(depth, cv2.COLOR_BGR2GRAY)
+        depth = depth.astype(np.float32)
+        raw = False
 
     depth = np.squeeze(depth)
 
