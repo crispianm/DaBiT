@@ -1,0 +1,72 @@
+{
+    "seed": 2023,
+    "out_dir": "/projects/b5dh/dabit_output_ddp_smoke",
+    "dl_config": {
+        "w_train": 864,
+        "h_train": 480,
+        "num_local_frames": 10,
+        "num_ref_frames": 6
+    },
+    "bvidvc": {
+        "name": "bvidvc",
+        "video_root": "/projects/b5dh/data/dabit_training_data/bvidvc"
+    },
+    "youtube-vos": {
+        "name": "youtube-vos",
+        "video_root": "/projects/b5dh/data/youtube-vos",
+        "frames_root": "/projects/b5dh/data/youtube-vos/train_all_frames/JPEGImages",
+        "depths_root": "/projects/b5dh/data/dabit_training_data/youtube-vos-depth"
+    },
+    "tartanair": {
+        "name": "tartanair",
+        "video_root": "/projects/b5dh/data/dabit_training_data/tartanair",
+        "frames_root": "/projects/b5dh/data/dabit_training_data/tartanair/frames",
+        "depths_root": "/projects/b5dh/data/dabit_training_data/tartanair-depth"
+    },
+    "vkitti": {
+        "name": "vkitti",
+        "video_root": "/projects/b5dh/data/dabit_training_data/vkitti",
+        "frames_root": "/projects/b5dh/data/dabit_training_data/vkitti/frames",
+        "depths_root": "/projects/b5dh/data/dabit_training_data/vkitti-depth"
+    },
+    "losses": {
+        "blur_weight": 1,
+        "clear_weight": 1,
+        "sr_weight": 1
+    },
+    "net": "dabit",
+    "interp_mode": "nearest",
+    "datasets": [
+        "bvidvc",
+        "youtube-vos",
+        "tartanair",
+        "vkitti"
+    ],
+    "trainer": {
+        "type": "AdamW",
+        "amp": true,
+        "amp_dtype": "bfloat16",
+        "lr": 0.0004,
+        "weight_decay": 0.01,
+        "grad_clip": 1.0,
+        "warmup_iters": 5,
+        "batch_size": 4,
+        "num_workers": 4,
+        "prefetch_factor": 2,
+        "num_prefetch_queue": 16,
+        "img_freq": 1000000000,
+        "log_freq": 50,
+        "save_freq": 30,
+        "val_freq": 1000000000,
+        "val_num_videos": 8,
+        "iterations": 40,
+        "scheduler": {
+            "type": "CosineAnnealingLR",
+            "eta_min": 1e-06,
+            "warmup_start_factor": 0.01
+        },
+        "ema_decay": 0.999,
+        "compile": false,
+        "ddp_find_unused": true
+    }
+}

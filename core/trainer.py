@@ -7,9 +7,11 @@ import cv2
 import numpy as np
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torchvision
 import torchvision.transforms as transforms
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 
@@ -29,8 +31,26 @@ class Trainer:
         self.charbonnier_loss = CharbonnierLoss()
 
         self.config = config
-        self.model = model
         self.device = config["device"]
+
+        # ---- distributed setup ----
+        self.rank = dist.get_rank() if dist.is_initialized() else 0
+        self.world_size = dist.get_world_size() if dist.is_initialized() else 1
+        self.is_main = self.rank == 0
+
+        # self.net is always the bare module (checkpoints, img_propagation,
+        # validation); self.model is the (possibly DDP/compiled) training entry.
+        self.net = model
+        if self.world_size > 1:
+            self.model = DDP(
+                model,
+                device_ids=[torch.cuda.current_device()],
+                find_unused_parameters=config["trainer"].get("ddp_find_unused", True),
+            )
+        else:
+            self.model = model
+        if config["trainer"].get("compile", False):
+            self.model = torch.compile(self.model)
         self.epoch = start_epoch
         self.iteration = 0
         self.num_local_frames = config["dl_config"]["num_local_frames"]
@@ -113,10 +133,25 @@ class Trainer:
         self.scaler = torch.GradScaler("cuda", enabled=self.use_scaler)
         self.load()
 
-        # Set up tensorboard
+        # ---- EMA of the model weights (rank 0 only; ranks stay identical).
+        # Validation and best-model checkpoints use the EMA weights.
+        self.ema_decay = self.train_args.get("ema_decay", 0.999)
+        self.ema = None
+        if self.is_main:
+            ema_path = os.path.join(config["out_dir"], "model_ema_latest.pth")
+            if os.path.isfile(ema_path):
+                self.ema = torch.load(ema_path, map_location="cuda", weights_only=True)
+                print("Resumed EMA weights from model_ema_latest.pth")
+            else:
+                self.ema = {
+                    k: v.detach().clone().float()
+                    for k, v in self.net.state_dict().items()
+                }
+
+        # Set up tensorboard (rank 0 only)
         self.summary = {}
         self.log_dir = os.path.join(config["out_dir"], "logs")
-        self.writer = SummaryWriter(self.log_dir)
+        self.writer = SummaryWriter(self.log_dir) if self.is_main else None
 
     def setup_optimizers(self):
         """Set up optimizers."""
@@ -183,6 +218,8 @@ class Trainer:
         Add tensorboard summary.
 
         """
+        if writer is None:  # non-main ranks don't log
+            return
         if name not in self.summary:
             self.summary[name] = 0
         self.summary[name] += val
@@ -224,7 +261,7 @@ class Trainer:
 
         print(f"Loading model from {model_path}")
         model_data = torch.load(model_path, map_location=self.device, weights_only=True)
-        self.model.load_state_dict(model_data)
+        self.net.load_state_dict(model_data)
 
         if opt_path is not None and os.path.isfile(opt_path):
             data_opt = torch.load(opt_path, map_location=self.device, weights_only=True)
@@ -265,7 +302,11 @@ class Trainer:
         opt_path = os.path.join(self.config["out_dir"], "opt_latest.pth")
         print(f"\nsaving model to {model_path} (iteration {it})")
 
-        self._atomic_save(self.model.state_dict(), model_path)
+        self._atomic_save(self.net.state_dict(), model_path)
+        if self.ema is not None:
+            self._atomic_save(
+                self.ema, os.path.join(self.config["out_dir"], "model_ema_latest.pth")
+            )
         self._atomic_save(
             {
                 "epoch": self.epoch,
@@ -280,10 +321,28 @@ class Trainer:
         with open(os.path.join(self.config["out_dir"], "latest.ckpt"), "w") as f:
             f.write(f"{it:06d}\n")
 
+    @torch.no_grad()
+    def _ema_update(self):
+        """Exponential moving average of the weights, with the usual ramp-up
+        so early steps don't anchor the average to the random init."""
+        d = min(self.ema_decay, (1 + self.iteration) / (10 + self.iteration))
+        for k, v in self.net.state_dict().items():
+            e = self.ema[k]
+            if v.dtype.is_floating_point:
+                e.mul_(d).add_(v.detach().float(), alpha=1 - d)
+            else:
+                e.copy_(v)
+
     def train(self):
         """training entry"""
         pbar = range(int(self.train_args["iterations"]))
-        pbar = tqdm(pbar, initial=self.iteration, dynamic_ncols=True, smoothing=0.01)
+        pbar = tqdm(
+            pbar,
+            initial=self.iteration,
+            dynamic_ncols=True,
+            smoothing=0.01,
+            disable=not self.is_main,
+        )
 
         while True:
             self.epoch += 1
@@ -328,7 +387,7 @@ class Trainer:
                             depth = nn.functional.interpolate(depth.unsqueeze(0).unsqueeze(0), (h, w), mode="bilinear", align_corners=True)[0, 0]
                             depth = 1 - ((depth - depth.min()) / (depth.max() - depth.min() + 1e-8))
                             depths.append(depth.unsqueeze(0))
-                    depths = torch.stack(depths).to(device).unsqueeze(0)
+                    depths = torch.stack(depths).to(device).view(b, t, 1, h, w)
 
                 # Create Binary Masks
                 binary_masks = (blur_maps > torch.min(blur_maps)).float()
@@ -338,7 +397,7 @@ class Trainer:
 
 
                 # ---- Image Propagation ----
-                prop_frames, prop_masks = self.model.img_propagation(
+                prop_frames, prop_masks = self.net.img_propagation(
                     blurry_frames,
                     blurry_flows_bi,
                     binary_masks,
@@ -410,7 +469,14 @@ class Trainer:
                     )
                 
             # ---- NaN/Inf-guarded, grad-clipped optimisation step ----
-            if torch.isfinite(total_loss):
+            # Under DDP the skip decision must be collective: if one rank
+            # backwards while another skips, the gradient allreduce deadlocks.
+            finite = torch.isfinite(total_loss.detach())
+            if self.world_size > 1:
+                flag = finite.int()
+                dist.all_reduce(flag, op=dist.ReduceOp.MIN)
+                finite = flag.bool()
+            if finite:
                 self.scaler.scale(total_loss).backward()
                 self.scaler.unscale_(self.optimizer)  # no-op when scaler disabled
                 grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -419,6 +485,8 @@ class Trainer:
                 if torch.isfinite(grad_norm):
                     self.scaler.step(self.optimizer)
                     self.scheduler.step()
+                    if self.ema is not None:
+                        self._ema_update()
                 else:
                     self.nan_skips += 1  # non-finite grads: skip this step
                 self.scaler.update()
@@ -432,7 +500,7 @@ class Trainer:
             ####################################################
             # Write images to tensorboard
             ####################################################
-            if self.iteration % self.train_args["img_freq"] == 0:
+            if self.writer is not None and self.iteration % self.train_args["img_freq"] == 0:
                 # tensors to cpu
 
                 blur = torch.cat([i for i in blurry_frames[0].cpu()], 1)
@@ -468,14 +536,16 @@ class Trainer:
                     (f"LR: {self.scheduler.get_last_lr()[0]} Loss: {total_loss.item():.3f}")
                 )
 
-            # saving models
-            if self.iteration % self.train_args["save_freq"] == 0:
+            # saving models (rank 0 owns all checkpoints)
+            if self.is_main and self.iteration % self.train_args["save_freq"] == 0:
                 self.save(int(self.iteration))
 
             # periodic validation (validate() restores train mode on exit).
+            # Rank 0 only; other ranks simply proceed and block on the next
+            # gradient allreduce until rank 0 rejoins.
             # Guarded so a validation error can never kill an unattended run.
             val_freq = self.train_args.get("val_freq", 0)
-            if val_freq and self.iteration % val_freq == 0:
+            if self.is_main and val_freq and self.iteration % val_freq == 0:
                 try:
                     self.validate()
                 except Exception as e:
@@ -489,6 +559,23 @@ class Trainer:
 
 
     def validate(self):
+        """Validate the EMA weights (falling back to the raw weights when no
+        EMA is kept) and restore the training weights afterwards, even if
+        validation throws."""
+        if self.ema is None:
+            self._validate_impl()
+            return
+        backup = {k: v.detach().clone() for k, v in self.net.state_dict().items()}
+        self.net.load_state_dict(
+            {k: v.to(backup[k].dtype) for k, v in self.ema.items()}
+        )
+        try:
+            self._validate_impl()
+        finally:
+            self.net.load_state_dict(backup)
+            self.model.train()
+
+    def _validate_impl(self):
         """Validate on a small fixed subset of DAVIS-Blur (first
         `val_num_videos` sequences; 0 = all 90). Mirrors the inference loop of
         test_dabit.py: RAFT flows, image propagation, per-frame cached depth,
@@ -575,7 +662,7 @@ class Trainer:
                         flows_bi[1][:, s_f : e_f - 1],
                     )
                     prop_imgs_sub, updated_local_masks_sub = (
-                        self.model.img_propagation(
+                        self.net.img_propagation(
                             input_tensors[:, s_f:e_f],
                             pred_flows_bi_sub,
                             binary_masks[:, s_f:e_f],
@@ -600,7 +687,7 @@ class Trainer:
                 updated_masks = torch.cat(updated_masks, dim=1)
             else:
                 b, t, _, _, _ = binary_masks.size()
-                prop_imgs, updated_local_masks = self.model.img_propagation(
+                prop_imgs, updated_local_masks = self.net.img_propagation(
                     input_tensors, flows_bi, binary_masks, interpolation="nearest"
                 )
                 updated_frames = (
@@ -656,7 +743,7 @@ class Trainer:
                 l_t = len(neighbor_ids)
 
                 with torch.no_grad():
-                    ori_pred_img = self.model(
+                    ori_pred_img = self.net(
                         selected_imgs,
                         selected_depths,
                         selected_pred_flows_bi,
@@ -727,8 +814,10 @@ class Trainer:
         # Keep the best-validation model alongside the rolling latest one.
         if avg_psnr > self.best_psnr:
             self.best_psnr = avg_psnr
+            # self.net currently holds the EMA weights (see validate()), so the
+            # best checkpoint is the EMA model.
             self._atomic_save(
-                self.model.state_dict(),
+                self.net.state_dict(),
                 os.path.join(self.config["out_dir"], "model_best.pth"),
             )
             with open(os.path.join(self.config["out_dir"], "best.ckpt"), "w") as f:
