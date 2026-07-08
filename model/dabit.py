@@ -515,7 +515,7 @@ class DaBiT(BaseNetwork):
 
         prop_mask_in = torch.cat([ds_blur_maps, ds_bin_masks], dim=2)
         enc_feat, _ = self.feat_prop_module(
-            enc_feat.unsqueeze(0), ds_flows_f, ds_flows_b, prop_mask_in, interpolation
+            enc_feat.view(b, t, c, h, w), ds_flows_f, ds_flows_b, prop_mask_in, interpolation
         )
 
         trans_feat = self.ss(enc_feat.view(-1, c, h, w), b, fold_feat_size)
