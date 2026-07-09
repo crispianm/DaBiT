@@ -14,7 +14,7 @@
     "youtube-vos": {
         "name": "youtube-vos",
         "video_root": "/projects/b5dh/data/youtube-vos",
-        "frames_root": "/projects/b5dh/data/youtube-vos/train_all_frames/JPEGImages",
+        "frames_root": "/projects/b5dh/data/train/youtube_vos/rgb",
         "depths_root": "/projects/b5dh/data/dabit_training_data/youtube-vos-depth"
     },
     "tartanair": {
