@@ -33,7 +33,7 @@
         "blur_weight": 1,
         "clear_weight": 1,
         "sr_weight": 1,
-        "perc_weight": 1.0,
+        "perc_weight": 4.0,
         "temp_weight": 1.0
     },
     "net": "dabit",
