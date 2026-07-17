@@ -17,8 +17,10 @@ from torch.utils.data import DataLoader
 
 from core.loss import CharbonnierLoss
 from core.dataset import TestDataset
-from core.metrics import calc_psnr_and_ssim
+from core.metrics import calc_psnr_and_ssim, calculate_tof
 from core.utils import get_ref_index
+from model.dabit import fbConsistencyCheck
+from model.modules.flow_loss_utils import flow_warp
 
 from model.modules.flow_comp_raft import RAFT_bi
 from model.modules.depth_anything_v2.dpt import DepthAnythingV2
@@ -32,6 +34,27 @@ class Trainer:
 
         self.config = config
         self.device = config["device"]
+
+        # ---- Optional perceptual + temporal-consistency losses ----
+        # perc: LPIPS with a VGG backbone used as a differentiable perceptual
+        # loss (Zhang et al. 2018). Trained on the VGG variant; validation and
+        # final evaluation use the AlexNet variant, as in test_dabit.py.
+        # temp: flow-warped consistency (Lai et al. ECCV 2018) — prediction t
+        # warped to t+1 with GT flows, L1 under an occlusion mask derived from
+        # forward-backward flow consistency.
+        self.perc_weight = config["losses"].get("perc_weight", 0)
+        self.temp_weight = config["losses"].get("temp_weight", 0)
+        self.lpips_loss = None
+        self.lpips_eval = None
+        if self.perc_weight > 0:
+            import lpips
+            self.lpips_loss = lpips.LPIPS(net="vgg").to(self.device).eval()
+            self.lpips_eval = lpips.LPIPS(net="alex").to(self.device).eval()
+            for p in self.lpips_loss.parameters():
+                p.requires_grad = False
+            for p in self.lpips_eval.parameters():
+                p.requires_grad = False
+        self.best_lpips = float("inf")
 
         # ---- distributed setup ----
         self.rank = dist.get_rank() if dist.is_initialized() else 0
@@ -286,6 +309,12 @@ class Trainer:
             self.best_psnr = float(best_psnr)
             print(f"Best validation PSNR so far: {self.best_psnr:.2f} (iter {best_it})")
 
+        best_lpips_file = os.path.join(out_dir, "best_lpips.ckpt")
+        if os.path.isfile(best_lpips_file):
+            best_it, best_lpips = open(best_lpips_file, "r").read().split()
+            self.best_lpips = float(best_lpips)
+            print(f"Best validation LPIPS so far: {self.best_lpips:.4f} (iter {best_it})")
+
     @staticmethod
     def _atomic_save(obj, path):
         """torch.save via a temp file + rename, so an interrupted write (e.g.
@@ -457,12 +486,52 @@ class Trainer:
                 total_loss = sr_loss + blur_loss + clear_loss
                 # total_loss = self.l1_loss(ori_pred_frames, gt_frames)
 
+                # ---- Perceptual loss (LPIPS-VGG) at input resolution ----
+                if self.lpips_loss is not None:
+                    perc_loss = (
+                        self.lpips_loss(
+                            pred_frames.reshape(-1, c, h, w) * 2 - 1,
+                            resized_gt_frames.reshape(-1, c, h, w) * 2 - 1,
+                        ).mean()
+                        * self.perc_weight
+                    )
+                    total_loss = total_loss + perc_loss
+
+                # ---- Temporal consistency loss on the local window only
+                # (reference frames are not temporally adjacent) ----
+                if self.temp_weight > 0:
+                    temp_terms = []
+                    for bi in range(b):
+                        idx = torch.as_tensor(
+                            [int(x[bi]) for x in local_index], device=device
+                        )
+                        pred_loc = pred_frames[bi][idx]        # l_t, c, h, w
+                        gt_loc = resized_gt_frames[bi][idx].unsqueeze(0)
+                        with torch.no_grad():
+                            gt_fwd, gt_bwd = self.raft(gt_loc)
+                            gt_fwd = gt_fwd[0].float()         # l_t-1, 2, h, w
+                            gt_bwd = gt_bwd[0].float()
+                            # validity on frame t+1's grid (we warp with the
+                            # backward flow, defined on that grid)
+                            valid = fbConsistencyCheck(gt_bwd, gt_fwd)
+                        warped = flow_warp(
+                            pred_loc[:-1], gt_bwd.permute(0, 2, 3, 1)
+                        )
+                        diff = torch.abs(pred_loc[1:] - warped) * valid
+                        temp_terms.append(diff.sum() / (valid.sum() * c + 1e-8))
+                    temp_loss = torch.stack(temp_terms).mean() * self.temp_weight
+                    total_loss = total_loss + temp_loss
+
                 # Log only every log_freq iters; each .item() is a GPU->CPU sync.
                 if self.iteration % self.train_args["log_freq"] == 0:
                     self.add_summary(self.writer, "loss/blur_loss", blur_loss.item())
                     self.add_summary(self.writer, "loss/clear_loss", clear_loss.item())
                     if self.config["losses"]["sr_weight"] > 0:
                         self.add_summary(self.writer, "loss/sr_loss", sr_loss.item())
+                    if self.lpips_loss is not None:
+                        self.add_summary(self.writer, "loss/perc_loss", perc_loss.item())
+                    if self.temp_weight > 0:
+                        self.add_summary(self.writer, "loss/temp_loss", temp_loss.item())
                     self.add_summary(self.writer, "loss/total_loss", total_loss.item())
                     self.add_summary(
                         self.writer, "loss/learning_rate", self.scheduler.get_last_lr()[0]
@@ -583,6 +652,9 @@ class Trainer:
         validation.txt in the run's output directory."""
 
         results_dict = {"PSNR": [], "SSIM": [], "Time": []}
+        if self.lpips_eval is not None:
+            results_dict["LPIPS"] = []
+            results_dict["tOF"] = []
         logfile = open(os.path.join(self.config["out_dir"], "validation.txt"), "a")
         logfile.write(f"Iteration: {self.iteration}")
 
@@ -773,7 +845,8 @@ class Trainer:
             pbar.set_description(f"Computing metrics for {video_name[0]}")
             gt_frames = gt_tensors[0].permute(0, 2, 3, 1).cpu().numpy()
 
-            psnr_list, ssim_list = [], []
+            psnr_list, ssim_list, lpips_list, tof_list = [], [], [], []
+            prev_comp, prev_gt = None, None
             for comp_frame, gt_frame in zip(comp_frames, gt_frames):
                 comp_frame = cv2.resize(
                     cv2.cvtColor(comp_frame, cv2.COLOR_BGR2RGB),
@@ -785,8 +858,32 @@ class Trainer:
                 psnr_list.append(psnr)
                 ssim_list.append(ssim)
 
+                if self.lpips_eval is not None:
+                    with torch.no_grad():
+                        c_t = (
+                            torch.from_numpy(comp_frame / 127.5 - 1.0)
+                            .permute(2, 0, 1)[None]
+                            .float()
+                            .to(self.device)
+                        )
+                        g_t = (
+                            torch.from_numpy(gt_frame / 127.5 - 1.0)
+                            .permute(2, 0, 1)[None]
+                            .float()
+                            .to(self.device)
+                        )
+                        lpips_list.append(float(self.lpips_eval(c_t, g_t)))
+                    if prev_comp is not None:
+                        tof_list.append(
+                            calculate_tof(prev_comp, comp_frame, prev_gt, gt_frame)
+                        )
+                    prev_comp, prev_gt = comp_frame, gt_frame
+
             results_dict["PSNR"].append(np.mean(psnr_list))
             results_dict["SSIM"].append(np.mean(ssim_list))
+            if self.lpips_eval is not None:
+                results_dict["LPIPS"].append(np.mean(lpips_list))
+                results_dict["tOF"].append(np.mean(tof_list))
 
             summary = (
                 f"PSNR: {np.mean(psnr_list):.2f}, SSIM: {np.mean(ssim_list):.4f}, "
@@ -810,6 +907,28 @@ class Trainer:
         self.writer.add_scalar(
             "validation/avg_ssim", np.mean(results_dict["SSIM"]), self.iteration
         )
+        if self.lpips_eval is not None:
+            avg_lpips = float(np.mean(results_dict["LPIPS"]))
+            self.writer.add_scalar("validation/avg_lpips", avg_lpips, self.iteration)
+            self.writer.add_scalar(
+                "validation/avg_tof", np.mean(results_dict["tOF"]), self.iteration
+            )
+            # During perceptual fine-tuning the primary target is LPIPS, so a
+            # separate best checkpoint is tracked on it.
+            if avg_lpips < self.best_lpips:
+                self.best_lpips = avg_lpips
+                self._atomic_save(
+                    self.net.state_dict(),
+                    os.path.join(self.config["out_dir"], "model_best_lpips.pth"),
+                )
+                with open(
+                    os.path.join(self.config["out_dir"], "best_lpips.ckpt"), "w"
+                ) as f:
+                    f.write(f"{self.iteration} {avg_lpips:.4f}\n")
+                print(
+                    f"\nNew best validation LPIPS {avg_lpips:.4f} "
+                    f"at iteration {self.iteration} -- saved model_best_lpips.pth"
+                )
 
         # Keep the best-validation model alongside the rolling latest one.
         if avg_psnr > self.best_psnr:
