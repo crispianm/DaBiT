@@ -48,7 +48,7 @@
         "type": "AdamW",
         "amp": true,
         "amp_dtype": "bfloat16",
-        "lr": 2.5e-05,
+        "lr": 0.0001,
         "weight_decay": 0.01,
         "grad_clip": 1.0,
         "warmup_iters": 500,
@@ -64,7 +64,7 @@
         "iterations": 50000,
         "scheduler": {
             "type": "CosineAnnealingLR",
-            "eta_min": 1e-07,
+            "eta_min": 1e-06,
             "warmup_start_factor": 0.01
         },
         "model_path": "/projects/b5dh/dabit_output/dabit_dabit_isambard/model_best.pth"
