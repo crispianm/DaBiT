@@ -23,11 +23,11 @@ from model.dabit import fbConsistencyCheck
 from model.modules.flow_loss_utils import flow_warp
 
 from model.modules.flow_comp_raft import RAFT_bi
-from model.modules.depth_anything_v2.dpt import DepthAnythingV2
+from model.modules.depth_anything_v2.dpt import MODEL_CONFIGS, DepthAnythingV2
 
 
 class Trainer:
-    def __init__(self, config, prefetcher, model, start_epoch=0):
+    def __init__(self, config, train_loader, model, start_epoch=0):
 
         self.l1_loss = nn.L1Loss()
         self.charbonnier_loss = CharbonnierLoss()
@@ -99,36 +99,14 @@ class Trainer:
         self.nan_skips = 0
         self.best_psnr = float("-inf")  # best validation PSNR (see validate())
 
-        self.prefetcher = prefetcher
+        self.train_loader = train_loader
 
         # Initialize RAFT
         self.raft = RAFT_bi(device=self.device)
 
-        model_configs = {
-            "vits": {
-                "encoder": "vits",
-                "features": 64,
-                "out_channels": [48, 96, 192, 384],
-            },
-            "vitb": {
-                "encoder": "vitb",
-                "features": 128,
-                "out_channels": [96, 192, 384, 768],
-            },
-            "vitl": {
-                "encoder": "vitl",
-                "features": 256,
-                "out_channels": [256, 512, 1024, 1024],
-            },
-            "vitg": {
-                "encoder": "vitg",
-                "features": 384,
-                "out_channels": [1536, 1536, 1536, 1536],
-            },
-        }
-        encoder = "vits"  # or 'vitb', 'vitl', 'vitg'
+        encoder = "vits"  # or 'vitb', 'vitl'
 
-        depth_model = DepthAnythingV2(**model_configs[encoder])
+        depth_model = DepthAnythingV2(**MODEL_CONFIGS[encoder])
         depth_model.load_state_dict(
             torch.load(
                 f"./weights/depth_anything_v2_{encoder}.pth",
@@ -376,7 +354,6 @@ class Trainer:
         while True:
             self.epoch += 1
             pbar.set_postfix(epoch=self.epoch)
-            self.prefetcher.reset()
             torch.cuda.empty_cache()
             gc.collect()
             # Validation is now periodic (every val_freq iters) inside
@@ -393,8 +370,7 @@ class Trainer:
 
         device = self.device
         self.model.train()  # restore train mode (validate() switches to eval)
-        train_data = self.prefetcher.next()
-        while train_data is not None:
+        for train_data in self.train_loader:
             # Workers build batches on CPU in parallel; move this one to the GPU.
             train_data = [
                 d.to(device, non_blocking=True) if torch.is_tensor(d) else d
@@ -623,9 +599,6 @@ class Trainer:
 
             if self.iteration > self.train_args["iterations"]:
                 break
-
-            train_data = self.prefetcher.next()
-
 
     def validate(self):
         """Validate the EMA weights (falling back to the raw weights when no

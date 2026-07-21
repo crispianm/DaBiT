@@ -26,7 +26,6 @@
     "interp_mode": "nearest",
     "datasets": ["bvidvc", "youtube-vos"],
     "trainer": {
-        "version": "trainer",
         "type": "AdamW",
         "amp": true,
         "amp_dtype": "bfloat16",
@@ -37,7 +36,6 @@
         "batch_size": 1,
         "num_workers": 10,
         "prefetch_factor": 2,
-        "num_prefetch_queue": 16,
         "img_freq": 1000,
         "log_freq": 50,
         "save_freq": 10000,

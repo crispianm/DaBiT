@@ -150,22 +150,31 @@ class DPTHead(nn.Module):
         return out
 
 
+# Constructor kwargs per encoder size, matching the released checkpoints
+# (weights/depth_anything_v2_<encoder>.pth). Shared by training, evaluation
+# and the get_depths.py utility.
+MODEL_CONFIGS = {
+    'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
+    'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
+    'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
+}
+
+
 class DepthAnythingV2(nn.Module):
     def __init__(
-        self, 
-        encoder='vitl', 
-        features=256, 
-        out_channels=[256, 512, 1024, 1024], 
-        use_bn=False, 
+        self,
+        encoder='vitl',
+        features=256,
+        out_channels=[256, 512, 1024, 1024],
+        use_bn=False,
         use_clstoken=False
     ):
         super(DepthAnythingV2, self).__init__()
-        
+
         self.intermediate_layer_idx = {
             'vits': [2, 5, 8, 11],
-            'vitb': [2, 5, 8, 11], 
-            'vitl': [4, 11, 17, 23], 
-            'vitg': [9, 19, 29, 39]
+            'vitb': [2, 5, 8, 11],
+            'vitl': [4, 11, 17, 23],
         }
         
         self.encoder = encoder

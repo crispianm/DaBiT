@@ -13,7 +13,6 @@ from core.dataset import TrainDataset, Sampler
 from model.dabit import DaBiT
 from model.misc import set_random_seed
 from torch.utils.data import DataLoader
-from core.prefetch_dataloader import PrefetchDataLoader, CPUPrefetcher
 
 
 def main(config : dict):
@@ -49,7 +48,7 @@ def main(config : dict):
         TrainDataset(config["dl_config"], config[key]) for key in dataset_keys
     ]
     print("Training on datasets:", ", ".join(dataset_keys))
-    train_sampler = Sampler(datasets_train, iter=False)
+    train_sampler = Sampler(datasets_train)
 
 
     # DataLoaders. Workers build samples on CPU (focal-blur synthesis included)
@@ -70,21 +69,14 @@ def main(config : dict):
         drop_last=True,
     )
     if num_workers > 0:
-        # PyTorch's own multi-process prefetching (prefetch_factor) feeds the GPU;
-        # the legacy threaded PrefetchDataLoader is incompatible with worker
-        # multiprocessing (corrupts DataLoader _task_info), so use a plain loader.
+        # PyTorch's own multi-process prefetching (prefetch_factor) feeds the GPU.
         dataloader_args.update(
             worker_init_fn=worker_init_fn,
             pin_memory=True,
             persistent_workers=True,
             prefetch_factor=train_args.get("prefetch_factor", 2),
         )
-        train_loader = DataLoader(**dataloader_args)
-    else:
-        train_loader = PrefetchDataLoader(
-            train_args["num_prefetch_queue"], **dataloader_args
-        )
-    prefetcher = CPUPrefetcher(train_loader)
+    train_loader = DataLoader(**dataloader_args)
 
     # Output directory
     config["out_dir"] = os.path.join(
@@ -104,7 +96,7 @@ def main(config : dict):
     if is_main:
         print(config["net"], "network created")
 
-    trainer = core.trainer.Trainer(config, prefetcher, model)
+    trainer = core.trainer.Trainer(config, train_loader, model)
     trainer.train()
 
     if world_size > 1:
