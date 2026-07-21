@@ -1,7 +1,6 @@
 import os
 import random
 
-import numpy as np
 import cv2
 
 import torch
@@ -243,37 +242,18 @@ class TestDataset(torch.utils.data.Dataset):
 
 
 class Sampler(torch.utils.data.Dataset):
-    def __init__(self, datasets, p_datasets=None, iter=False, samples_per_epoch=1000):
+    """Randomly samples across datasets, weighted by their lengths."""
+
+    def __init__(self, datasets, samples_per_epoch=1000):
         self.datasets = datasets
-        self.len_datasets = np.array([len(dataset) for dataset in self.datasets])
-        self.p_datasets = p_datasets
-        self.iter = iter
-
-        if p_datasets is None:
-            self.p_datasets = self.len_datasets / np.sum(self.len_datasets)
-
+        lengths = [len(dataset) for dataset in datasets]
+        self.p_datasets = [l / sum(lengths) for l in lengths]
         self.samples_per_epoch = samples_per_epoch
 
-        self.accum = [
-            0,
-        ]
-        for i, length in enumerate(self.len_datasets):
-            self.accum.append(self.accum[-1] + self.len_datasets[i])
-
     def __getitem__(self, index):
-        if self.iter:
-            # iterate through all datasets
-            for i in range(len(self.accum)):
-                if index < self.accum[i]:
-                    return self.datasets[i - 1].__getitem__(index - self.accum[i - 1])
-        else:
-            # first sample a dataset
-            dataset = random.choices(self.datasets, self.p_datasets)[0]
-            # sample a sequence from the dataset
-            return dataset.__getitem__(random.randint(0, len(dataset) - 1))
+        # first sample a dataset, then a sequence from it
+        dataset = random.choices(self.datasets, self.p_datasets)[0]
+        return dataset[random.randint(0, len(dataset) - 1)]
 
     def __len__(self):
-        if self.iter:
-            return int(np.sum(self.len_datasets))
-        else:
-            return self.samples_per_epoch
+        return self.samples_per_epoch

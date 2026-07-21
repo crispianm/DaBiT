@@ -19,7 +19,7 @@ from core.metrics import calc_psnr_and_ssim, calculate_tof
 from core.utils import get_ref_index
 from model.modules.flow_comp_raft import RAFT_bi
 from model.dabit import DaBiT
-from model.modules.depth_anything_v2.dpt import DepthAnythingV2
+from model.modules.depth_anything_v2.dpt import MODEL_CONFIGS, DepthAnythingV2
 
 
 # Number of worker processes used for the (CPU-bound) PSNR/SSIM/tOF metrics.
@@ -136,16 +136,9 @@ if __name__ == "__main__":
     # Set up DepthAnythingV2
     ##############################################
 
-    model_configs = {
-        "vits": {
-            "encoder": "vits",
-            "features": 64,
-            "out_channels": [48, 96, 192, 384],
-        },
-    }
-    encoder = "vits"  # or 'vitb', 'vitl', 'vitg'
+    encoder = "vits"  # or 'vitb', 'vitl'
 
-    depth_model = DepthAnythingV2(**model_configs[encoder])
+    depth_model = DepthAnythingV2(**MODEL_CONFIGS[encoder])
     depth_model.load_state_dict(
         torch.load(
             f"./weights/depth_anything_v2_{encoder}.pth",

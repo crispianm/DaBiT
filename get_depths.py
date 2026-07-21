@@ -4,7 +4,7 @@ import cv2
 import torch
 from tqdm import tqdm
 
-from model.modules.depth_anything_v2.dpt import DepthAnythingV2
+from model.modules.depth_anything_v2.dpt import MODEL_CONFIGS, DepthAnythingV2
 
 
 """
@@ -97,13 +97,7 @@ if __name__ == "__main__":
         print("No GPU found, using cpu instead")
         device = torch.device("cpu")
 
-    model_configs = {
-        'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
-        'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
-        'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
-    }
-
-    depth_model = DepthAnythingV2(**model_configs[args.encoder])
+    depth_model = DepthAnythingV2(**MODEL_CONFIGS[args.encoder])
     depth_model.load_state_dict(torch.load(f'./weights/depth_anything_v2_{args.encoder}.pth', map_location='cpu', weights_only=True))
     depth_model = depth_model.to(device).eval()
 

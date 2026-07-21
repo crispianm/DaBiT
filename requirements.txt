@@ -15,7 +15,6 @@ pytorch-wavelets==1.3.0
 
 # core scientific / vision stack
 numpy==2.4.4
-scipy==1.17.1
 opencv-python==4.13.0.92
 scikit-image==0.26.0
 

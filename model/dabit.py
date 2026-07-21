@@ -14,13 +14,49 @@ from model.modules.sparse_transformer import (
 
 from model.modules.flow_loss_utils import flow_warp
 from model.modules.deformconv import ModulatedDeformConv2d
-from model.basicvsr_net import (
-    ResidualBlocksWithInputConv,
-)
+from model.sr_backbone_utils import make_layer, ResidualBlockNoBN
 from model.upsample import PixelShufflePack
-# from mmcv.ops import ModulatedDeformConv2d, modulated_deform_conv2d
 
 from .misc import constant_init
+
+
+class ResidualBlocksWithInputConv(nn.Module):
+    """Residual blocks with a convolution in front.
+
+    Args:
+        in_channels (int): Number of input channels of the first conv.
+        out_channels (int): Number of channels of the residual blocks.
+            Default: 64.
+        num_blocks (int): Number of residual blocks. Default: 30.
+    """
+
+    def __init__(self, in_channels, out_channels=64, num_blocks=30):
+        super().__init__()
+
+        main = []
+
+        # a convolution used to match the channels of the residual blocks
+        main.append(nn.Conv2d(in_channels, out_channels, 3, 1, 1, bias=True))
+        main.append(nn.LeakyReLU(negative_slope=0.1, inplace=True))
+
+        # residual blocks
+        main.append(
+            make_layer(ResidualBlockNoBN, num_blocks, mid_channels=out_channels)
+        )
+
+        self.main = nn.Sequential(*main)
+
+    def forward(self, feat):
+        """
+        Forward function for ResidualBlocksWithInputConv.
+
+        Args:
+            feat (Tensor): Input feature with shape (n, in_channels, h, w)
+
+        Returns:
+            Tensor: Output feature with shape (n, out_channels, h, w)
+        """
+        return self.main(feat)
 
 
 def length_sq(x):
@@ -301,7 +337,7 @@ class deconv(nn.Module):
 
 
 class DaBiT(BaseNetwork):
-    def __init__(self, init_weights=False, model_path=None):
+    def __init__(self):
         super(DaBiT, self).__init__()
         channel = 128
         hidden = 512
@@ -386,12 +422,6 @@ class DaBiT(BaseNetwork):
             depths=depths,
             t2t_params=t2t_params,
         )
-
-
-        if model_path is not None:
-            ckpt = torch.load(model_path, map_location="cpu", weights_only=True)
-            self.load_state_dict(ckpt, strict=True)
-            print("Pretrained DaBiT has loaded.")
 
         # print network parameter number
         self.print_network()

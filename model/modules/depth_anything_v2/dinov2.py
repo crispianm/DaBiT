@@ -17,7 +17,7 @@ import torch.nn as nn
 import torch.utils.checkpoint
 from torch.nn.init import trunc_normal_
 
-from .dinov2_layers import Mlp, PatchEmbed, SwiGLUFFNFused, MemEffAttention, NestedTensorBlock as Block
+from .dinov2_layers import Mlp, PatchEmbed, MemEffAttention, NestedTensorBlock as Block
 
 
 logger = logging.getLogger("dinov2")
@@ -121,9 +121,6 @@ class DinoVisionTransformer(nn.Module):
         if ffn_layer == "mlp":
             logger.info("using MLP layer as FFN")
             ffn_layer = Mlp
-        elif ffn_layer == "swiglufused" or ffn_layer == "swiglu":
-            logger.info("using SwiGLU layer as FFN")
-            ffn_layer = SwiGLUFFNFused
         elif ffn_layer == "identity":
             logger.info("using Identity layer as FFN")
 
@@ -378,36 +375,18 @@ def vit_large(patch_size=16, num_register_tokens=0, **kwargs):
     return model
 
 
-def vit_giant2(patch_size=16, num_register_tokens=0, **kwargs):
-    """
-    Close to ViT-giant, with embed-dim 1536 and 24 heads => embed-dim per head 64
-    """
-    model = DinoVisionTransformer(
-        patch_size=patch_size,
-        embed_dim=1536,
-        depth=40,
-        num_heads=24,
-        mlp_ratio=4,
-        block_fn=partial(Block, attn_class=MemEffAttention),
-        num_register_tokens=num_register_tokens,
-        **kwargs,
-    )
-    return model
-
-
 def DINOv2(model_name):
     model_zoo = {
-        "vits": vit_small, 
-        "vitb": vit_base, 
-        "vitl": vit_large, 
-        "vitg": vit_giant2
+        "vits": vit_small,
+        "vitb": vit_base,
+        "vitl": vit_large,
     }
     
     return model_zoo[model_name](
         img_size=518,
         patch_size=14,
         init_values=1.0,
-        ffn_layer="mlp" if model_name != "vitg" else "swiglufused",
+        ffn_layer="mlp",
         block_chunks=0,
         num_register_tokens=0,
         interpolate_antialias=False,
