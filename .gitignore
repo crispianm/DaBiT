@@ -233,3 +233,6 @@ xperiments.ipynb
 *.ipynb
 /output
 /output1
+
+# research paper PDFs (linked from README, kept out of the code repo)
+*.pdf

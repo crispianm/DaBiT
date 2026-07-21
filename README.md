@@ -39,6 +39,26 @@ Retraining from scratch with this repository (`train.py`, `configs/dabit.json`) 
 the paper: a 250k-iteration run reaches **28.62 PSNR / 0.844 SSIM / 1.260 tOF / 0.240 LPIPS**
 on the same benchmark.
 
+### Improved models
+
+Two stronger models are released beyond the paper weights (all numbers below are the mean over
+all 90 DAVIS-Blur sequences, full fp32 inference):
+
+| Model | Weights | PSNR ↑ | SSIM ↑ | LPIPS ↓ | tOF ↓ |
+|-------|---------|-------:|-------:|--------:|------:|
+| Paper (`dabit.pth`)                | [v1.1](https://github.com/crispianm/DaBiT/releases/tag/v1.1) | 28.48 | 0.841 | 0.242 | 1.189 |
+| **Retrained, expanded data** (`dabit_retrained.pth`)   | [v1.1](https://github.com/crispianm/DaBiT/releases/tag/v1.1) | **29.17** | **0.858** | 0.217 | 1.103 |
+| **Perceptual + temporal FT** (`dabit_perceptual.pth`)  | [v1.2](https://github.com/crispianm/DaBiT/releases/tag/v1.2) | 28.99 | 0.856 | **0.173** | **0.882** |
+
+- **`dabit_retrained.pth`** — the paper architecture and recipe, retrained for 300k iterations
+  on a larger clean-video corpus (see [Datasets](#datasets--data-preparation-for-training)).
+  Pure fidelity gain: **+0.69 dB PSNR** over the released weights with no other change.
+- **`dabit_perceptual.pth`** — `dabit_retrained.pth` fine-tuned for 50k iterations with an added
+  LPIPS-VGG perceptual loss and a flow-warped, occlusion-masked temporal-consistency loss
+  (`losses.perc_weight` / `losses.temp_weight` in the config). Trades ~0.18 dB PSNR for a **20%
+  lower LPIPS** and **20% lower tOF** — sharper detail and smoother motion. Pick this one for
+  perceptual quality, `dabit_retrained.pth` for peak PSNR/SSIM.
+
 Evaluation is heavily optimised: ground-truth frames are prefetched in background worker
 processes, Depth Anything is cached per frame, and PSNR/SSIM/tOF are computed in parallel across
 CPU cores, so the full 90-sequence run is GPU-bound rather than CPU-bound. Pass `--save_videos`
@@ -66,21 +86,35 @@ pip install -r requirements.txt
 
 ## Pretrained weights
 
-Place the following in `weights/` (evaluation needs the first three):
+All weights are published as GitHub Release assets. The
+[**v1.1** release](https://github.com/crispianm/DaBiT/releases/tag/v1.1) contains every model
+plus the RAFT and Depth Anything V2 dependencies needed to run anything in this repo; the
+[**v1.2** release](https://github.com/crispianm/DaBiT/releases/tag/v1.2) adds the perceptual
+model. Download them into `weights/`:
+
+```bash
+mkdir -p weights && cd weights
+# core deps + models (needed to run test_dabit.py / train.py)
+gh release download v1.1 -R crispianm/DaBiT      # or download from the release page
+gh release download v1.2 -R crispianm/DaBiT      # perceptual model (optional)
+cd ..
+```
 
 ```
 weights/
-   |- dabit.pth                     # trained DaBiT model (~182 MB)
+   |- dabit.pth                     # paper model (~182 MB)
+   |- dabit_retrained.pth           # retrained on expanded data — best PSNR/SSIM
+   |- dabit_perceptual.pth          # perceptual + temporal fine-tune — best LPIPS/tOF
    |- raft.pth                      # RAFT optical flow (~21 MB)
-   |- depth_anything_v2_vits.pth    # Depth Anything V2, ViT-S (~95 MB)
-   |- depth_anything_v2_vitb.pth    # (optional) ViT-B
-   |- depth_anything_v2_vitl.pth    # (optional) ViT-L
+   |- depth_anything_v2_vits.pth    # Depth Anything V2, ViT-S (~95 MB) — used at train/test time
+   |- depth_anything_v2_vitb.pth    # (optional) ViT-B — for get_depths.py
+   |- depth_anything_v2_vitl.pth    # (optional) ViT-L — get_depths.py default
 ```
 
-`dabit.pth` is the final model. `dabit_280.pth` is the 280k-iteration checkpoint
-(`output_step_lr/model_280000.pth`). RAFT and Depth Anything V2 weights are from their
-respective releases. **Download the weights from the GitHub Release assets** (or the link in
-the repo description) and unzip into `weights/`.
+Evaluation needs `dabit*.pth` (choose one), `raft.pth`, and `depth_anything_v2_vits.pth`. The
+RAFT and Depth Anything V2 weights are redistributed unchanged from their original releases
+([RAFT](https://github.com/princeton-vl/RAFT), BSD-3; [Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2),
+Apache-2.0) for convenience.
 
 ## Reproduce the paper results (evaluation)
 
@@ -89,8 +123,9 @@ The DAVIS-Blur test set ships in [`blur_tests/`](blur_tests) (90 sequences, each
 evaluation is **self-contained** — no external dataset is required.
 
 ```bash
-python test_dabit.py                     # uses weights/dabit.pth, writes results/ + results.txt
-python test_dabit.py --model weights/dabit_280.pth   # evaluate a different checkpoint
+python test_dabit.py                                       # paper weights (weights/dabit.pth)
+python test_dabit.py --model weights/dabit_retrained.pth   # best PSNR/SSIM
+python test_dabit.py --model weights/dabit_perceptual.pth  # best LPIPS/tOF
 ```
 
 It runs RAFT → Depth Anything V2 → DaBiT over every sequence and prints the per-sequence and
@@ -99,9 +134,15 @@ write the refocused/upscaled frames to `results/<sequence>/`.
 
 ## Datasets & data preparation (for training)
 
-DaBiT is trained on **YouTube-VOS** (3,471 clips) + **BVI-DVC** (200 clips), with focal blur
-synthesised on the fly. The synthetic-blur test set (DAVIS-Blur) is built from DAVIS-2017 using
-the per-sequence parameters in [`davis_blur.csv`](davis_blur.csv).
+The paper model is trained on **YouTube-VOS** (3,471 clips) + **BVI-DVC** (200 clips), with focal
+blur synthesised on the fly. `dabit_retrained.pth` additionally uses **TartanAir-V2** (561 rendered
+camera trajectories) and **Virtual KITTI 2** (100 sequences) as extra clean-video sources — a
+~1.4 M-frame corpus in total. Because the pipeline only needs *clean* video (blur, blur maps, and
+depth are all synthesised/estimated), any diverse sharp-video collection can be added the same way:
+just point a dataset entry at it. **Ground-truth depth is never used** — depths for all datasets are
+estimated with Depth Anything V2 (`get_depths.py`), so the depth distribution driving blur synthesis
+matches what the model sees at inference. The synthetic-blur test set (DAVIS-Blur) is built from
+DAVIS-2017 using the per-sequence parameters in [`davis_blur.csv`](davis_blur.csv).
 
 | Script | Purpose |
 |--------|---------|
@@ -118,11 +159,13 @@ PNG/JPG/TIFF, or raw `.npy`/`.npz` arrays), matched to frames by name (`<frame>_
 [`configs/dabit.json`](configs/dabit.json), e.g.:
 
 ```
-/mnt/DATA/dabit_training_data/
-   |- bvidvc/        {frames,depths}/<seq>/...                # default layout
-   |- youtube-vos/   train_all_frames/JPEGImages/<seq>/...    # frames_root
-   |- youtube-vos-depth/ vos-output/train_all_frames/depth/   # depths_root (.npz)
+<your-data-root>/
+   |- bvidvc/        {frames,depths}/<seq>/...        # default self-contained layout
+   |- youtube-vos/   rgb/<seq>/...                    # frames_root
+   |- youtube-vos-depth/ <seq>/...                    # depths_root (estimated by get_depths.py)
 ```
+
+Edit the dataset paths in the config to point at your data root before training.
 
 > **Warning:** do **not** train on DAVIS — DAVIS-Blur (the test set) is built from the same
 > sequences, so adding it to training leaks the benchmark.
@@ -130,20 +173,30 @@ PNG/JPG/TIFF, or raw `.npy`/`.npz` arrays), matched to frames by name (`<frame>_
 ## Training
 
 ```bash
+# single GPU
 python train.py -c configs/dabit.json
+
+# multi-GPU (data-parallel); scale the config's batch_size / lr accordingly
+torchrun --standalone --nproc_per_node=<N> train.py -c configs/dabit.json
 ```
 
 `configs/dabit.json` follows the paper recipe: lr 1e-4, batch size 1, **300k iterations**,
 432×240 inputs (864×480 ground truth for the 2× super-resolution head), 10 local + 6 reference
 frames, focal blur synthesised on the fly from the depth maps. Checkpoints and TensorBoard logs
-are written to `out_dir`; a small DAVIS-Blur subset is validated every `val_freq` iterations.
+are written to `out_dir`; a small DAVIS-Blur subset is validated every `val_freq` iterations, and
+training auto-resumes from the latest checkpoint in `out_dir` on re-launch.
 
-For robustness the released trainer deviates from the paper in a few documented ways: AdamW
-(instead of Adam) with cosine LR decay + linear warmup, bf16 mixed precision, gradient
-clipping and non-finite loss/grad guards. Set `trainer.amp` to `false` and
-`trainer.scheduler` accordingly to get closer to the original fixed-LR fp32 recipe. (The
-released `weights/dabit.pth` is provided, so retraining is not required to reproduce the
-results.)
+Other configs are provided as examples: `configs/dabit_isambard.json` (the expanded-data recipe
+behind `dabit_retrained.pth`) and `configs/dabit_ft.json` (perceptual + temporal fine-tuning
+behind `dabit_perceptual.pth`; set `losses.perc_weight` / `losses.temp_weight` and a `model_path`
+to fine-tune from). The `jobs_*.sh` scripts are the SLURM wrappers used on the Isambard-AI
+cluster and are provided as references (they contain cluster-specific paths).
+
+For robustness the trainer deviates from the paper in a few documented ways: AdamW (instead of
+Adam) with cosine LR decay + linear warmup, bf16 mixed precision, gradient clipping and
+non-finite loss/grad guards, plus optional multi-GPU (DDP) and EMA weights. Set `trainer.amp` to
+`false` and `trainer.scheduler` accordingly to get closer to the original fixed-LR fp32 recipe.
+(Pretrained weights are provided, so retraining is not required to reproduce the results.)
 
 ## Model
 
