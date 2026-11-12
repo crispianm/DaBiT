@@ -437,8 +437,11 @@ if __name__ == "__main__":
         with torch.no_grad():
             for s in range(0, len(comp_arrs), 16):
                 e = min(len(comp_arrs), s + 16)
-                c = torch.from_numpy(np.stack(comp_arrs[s:e]) / 255.0).permute(0, 3, 1, 2).float().to(device)
-                g = torch.from_numpy(np.stack(gt_arrs[s:e]) / 255.0).permute(0, 3, 1, 2).float().to(device)
+                # comp_arrs and gt_arrs are both BGR-ordered here (the output is
+                # converted above and the blur_tests GT PNGs are stored R/B-swapped),
+                # which PSNR/SSIM/tOF tolerate but LPIPS does not: flip to RGB.
+                c = torch.from_numpy(np.stack(comp_arrs[s:e])[..., ::-1] / 255.0).permute(0, 3, 1, 2).float().to(device)
+                g = torch.from_numpy(np.stack(gt_arrs[s:e])[..., ::-1] / 255.0).permute(0, 3, 1, 2).float().to(device)
                 lpips_list.extend(lpips_model(c, g, normalize=True).view(-1).cpu().tolist())
 
         # ---- PSNR / SSIM / tOF: parallelised across CPU cores ----

@@ -25,7 +25,7 @@ RTX 4090 (`python test_dabit.py`).
 | PSNR ↑  | 28.777 | **28.480** |
 | SSIM ↑  | 0.811  | 0.841 |
 | tOF ↓   | 1.239  | 1.189 |
-| LPIPS ↓ | –      | 0.242 |
+| LPIPS ↓ | –      | 0.234 |
 
 (Mean over all 90 DAVIS-Blur sequences, `weights/dabit.pth`, RTX 4090.)
 
@@ -36,7 +36,7 @@ SSIM implementation/window. tOF (temporal optical-flow error) follows the
 for completeness.
 
 Retraining from scratch with this repository (`train.py`, `configs/dabit.json`) also reproduces
-the paper: a 250k-iteration run reaches **28.62 PSNR / 0.844 SSIM / 1.260 tOF / 0.240 LPIPS**
+the paper: a 250k-iteration run reaches **28.62 PSNR / 0.844 SSIM / 1.260 tOF / 0.240 LPIPS** (LPIPS from before the RGB fix below)
 on the same benchmark.
 
 ### Improved models
@@ -46,16 +46,16 @@ all 90 DAVIS-Blur sequences, full fp32 inference):
 
 | Model | Weights | PSNR ↑ | SSIM ↑ | LPIPS ↓ | tOF ↓ |
 |-------|---------|-------:|-------:|--------:|------:|
-| Paper (`dabit.pth`)                | [v1.1](https://github.com/crispianm/DaBiT/releases/tag/v1.1) | 28.48 | 0.841 | 0.242 | 1.189 |
-| **Retrained, expanded data** (`dabit_retrained.pth`)   | [v1.1](https://github.com/crispianm/DaBiT/releases/tag/v1.1) | **29.17** | **0.858** | 0.217 | 1.103 |
-| **Perceptual + temporal FT** (`dabit_perceptual.pth`)  | [v1.2](https://github.com/crispianm/DaBiT/releases/tag/v1.2) | 28.99 | 0.856 | **0.173** | **0.882** |
+| Paper (`dabit.pth`)                | [v1.1](https://github.com/crispianm/DaBiT/releases/tag/v1.1) | 28.48 | 0.841 | 0.234 | 1.189 |
+| **Retrained, expanded data** (`dabit_retrained.pth`)   | [v1.1](https://github.com/crispianm/DaBiT/releases/tag/v1.1) | **29.17** | **0.858** | 0.210 | 1.103 |
+| **Perceptual + temporal FT** (`dabit_perceptual.pth`)  | [v1.2](https://github.com/crispianm/DaBiT/releases/tag/v1.2) | 28.99 | 0.856 | **0.166** | **0.882** |
 
 - **`dabit_retrained.pth`** — the paper architecture and recipe, retrained for 300k iterations
   on a larger clean-video corpus (see [Datasets](#datasets--data-preparation-for-training)).
   Pure fidelity gain: **+0.69 dB PSNR** over the released weights with no other change.
 - **`dabit_perceptual.pth`** — `dabit_retrained.pth` fine-tuned for 50k iterations with an added
   LPIPS-VGG perceptual loss and a flow-warped, occlusion-masked temporal-consistency loss
-  (`losses.perc_weight` / `losses.temp_weight` in the config). Trades ~0.18 dB PSNR for a **20%
+  (`losses.perc_weight` / `losses.temp_weight` in the config). Trades ~0.18 dB PSNR for a **21%
   lower LPIPS** and **20% lower tOF** — sharper detail and smoother motion. Pick this one for
   perceptual quality, `dabit_retrained.pth` for peak PSNR/SSIM.
 
@@ -159,8 +159,9 @@ python run_clip.py --input sims/dog_pull/input.mp4 --gt sims/dog_pull/gt.mp4 -o 
 
 > Note: the `blur_tests/*/gt` PNGs are stored R/B-swapped (written that way by
 > `create_davis_blur.py`); pass `--gt_rb_swapped` / `--src_rb_swapped` when reading them.
-> `test_dabit.py` cancels the swap for PSNR/SSIM/tOF, but its LPIPS is computed on BGR-ordered
-> images (e.g. `bear`, paper model: 0.4093 BGR vs 0.3868 RGB); `run_clip.py` uses RGB.
+> `test_dabit.py` cancels the swap for all metrics; LPIPS is computed on RGB frames (fixed
+> 2026-11-12: earlier versions fed LPIPS BGR frames, e.g. `bear`, paper model, 0.4093 BGR vs
+> 0.3868 RGB). The LPIPS values above are the RGB rescore.
 
 ## Datasets & data preparation (for training)
 
