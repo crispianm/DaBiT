@@ -132,6 +132,36 @@ It runs RAFT → Depth Anything V2 → DaBiT over every sequence and prints the 
 mean PSNR / SSIM / LPIPS / tOF (logged to `results/results.txt`). Add `--save_videos` to also
 write the refocused/upscaled frames to `results/<sequence>/`.
 
+## Run on your own clip (input + ground truth)
+
+`run_clip.py` restores one clip with several models and scores each against a sharp ground truth.
+Both files can be videos or frame folders. The GT is used **only** for metrics: blur maps are
+estimated from the blurred input (Depth Anything V2 ViT-L, the `get_blur_maps.py` recipe), so the
+run is what you would get on a real clip without GT.
+
+```bash
+python run_clip.py --input blurred.mp4 --gt sharp.mp4 -o results_clip/myclip
+# default models: perceptual (LPIPS FT), retrained, paper; or pass --models <name|path.pth> ...
+```
+
+It writes, per model, restored PNG frames and an mp4, plus `comparison.mp4` (input | models | GT),
+`results.md`/`results.json` (mean PSNR/SSIM/LPIPS/tOF, with a bicubic-upscaled input baseline),
+`per_frame.csv` and `per_frame.png`. The protocol matches `test_dabit.py`: inference at 432x240
+(`--size` to change), 2x output, metrics at 864x480 against the resized GT.
+
+`make_focus_pull.py` simulates a focus pull (focal plane swept across the clip with the
+DAVIS-Blur blur model) on any sharp clip and writes `input.mp4` + `gt.mp4` for testing:
+
+```bash
+python make_focus_pull.py --src blur_tests/dog/gt --src_rb_swapped -o sims/dog_pull
+python run_clip.py --input sims/dog_pull/input.mp4 --gt sims/dog_pull/gt.mp4 -o results_clip/dog_pull
+```
+
+> Note: the `blur_tests/*/gt` PNGs are stored R/B-swapped (written that way by
+> `create_davis_blur.py`); pass `--gt_rb_swapped` / `--src_rb_swapped` when reading them.
+> `test_dabit.py` cancels the swap for PSNR/SSIM/tOF, but its LPIPS is computed on BGR-ordered
+> images (e.g. `bear`, paper model: 0.4093 BGR vs 0.3868 RGB); `run_clip.py` uses RGB.
+
 ## Datasets & data preparation (for training)
 
 The paper model is trained on **YouTube-VOS** (3,471 clips) + **BVI-DVC** (200 clips), with focal
