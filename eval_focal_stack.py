@@ -104,10 +104,25 @@ def main():
     valid = np.where((z["prominence"] > 3) & (z["gt_spread"] < 1.5))[0]
     assert set(positions.tolist()) == set(rpos) == set(epos)
 
-    def slice_mean(ri):
-        p = rpos[ri]
-        acc = sum(cv2.imread(os.path.join(ref_root, f"s{p:05d}_f{f:02d}.png")).astype(np.float32) for f in range(F))
+    def slice_mean(ri, root=None, p=None):
+        root = root or ref_root
+        p = rpos[ri] if p is None else p
+        acc = sum(cv2.imread(os.path.join(root, f"s{p:05d}_f{f:02d}.png")).astype(np.float32) for f in range(F))
         return acc / F  # BGR
+
+    def lighting_robust_edges(img):
+        g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        return cv2.Laplacian(cv2.GaussianBlur(np.log1p(g), (0, 0), 2), cv2.CV_32F)
+
+    def cross_stack_shift(p):
+        """(dx, dy) of the evaluated stack relative to the ref stack at lens position p.
+        The stack README says scenes 3 and 4 are pixel registered, but phase
+        correlation finds a 4-6 px horizontal shift, so it is measured per position."""
+        if a.ref_stack is None:
+            return 0.0, 0.0
+        (dx, dy), _ = cv2.phaseCorrelate(lighting_robust_edges(slice_mean(None, ref_root, p)),
+                                         lighting_robust_edges(slice_mean(None, a.stack, p)))
+        return dx, dy
 
     print("registering", ref_root, flush=True)
     small = []
@@ -139,6 +154,7 @@ def main():
     rows, async_res = [], []
     vals = {m: {"LPIPS": []} for m in methods}
     ctrl = {"registered": [], "unregistered": []}
+    shifts = []
 
     for n, p in enumerate(positions):
         ci, ri = e_idx[int(p)], r_idx[int(p)]
@@ -146,6 +162,9 @@ def main():
         raw = cv2.imread(os.path.join(a.clip, f"{ci:05d}.png")).astype(np.float64)
         warped = {}
         batch = {m: [] for m in methods}
+        dx, dy = cross_stack_shift(int(p))
+        shifts.append((int(p), dx, dy))
+        T = np.array([[1, 0, -dx], [0, 1, -dy], [0, 0, 1]], dtype=np.float64)  # eval coords -> ref coords
         for pi in valid:
             d = abs(p - gt_pos[pi]) / SLICE
             if d >= a.min_dist or (d < 1.0 and not lowlight):
@@ -153,8 +172,9 @@ def main():
                 if gi not in ref_cache:
                     ref_cache[gi] = slice_mean(gi)
                 if gi not in warped:
+                    M = np.vstack([map_s_to_g(A, ri, gi, 2.0), [0, 0, 1]]) @ T
                     warped[gi] = np.clip(cv2.warpAffine(
-                        ref_cache[gi], map_s_to_g(A, ri, gi, 2.0), (W, H),
+                        ref_cache[gi], M[:2], (W, H),
                         flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REFLECT), 0, 255)
                 x0, y0, x1, y1 = boxes[pi]
                 rp = warped[gi][y0:y1, x0:x1]
@@ -203,6 +223,9 @@ def main():
     dist = np.array([r["dist"] for r in rows])
     summ = {"n_pairs": len(rows), "n_valid_patches": int(len(valid)), "ecc_failures": fails,
             "lowlight_gain_matched": lowlight, "min_dist_slices": a.min_dist,
+            "cross_stack_shift_px": ({"dx_median": float(np.median([s[1] for s in shifts])),
+                                      "dx_range": [float(min(s[1] for s in shifts)), float(max(s[1] for s in shifts))],
+                                      "dy_median": float(np.median([s[2] for s in shifts]))} if lowlight else None),
             "control_psnr_within_1_slice": {k: (float(np.mean(v)) if v else None) for k, v in ctrl.items()},
             "all": {m: {k: float(vals[m][k].mean()) for k in METRICS} for m in methods}, "bins": {}}
     for lo, hi in BINS:
