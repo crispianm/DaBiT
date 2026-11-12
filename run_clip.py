@@ -278,6 +278,11 @@ def main():
                     help="GT frames are stored R/B-swapped (only blur_tests/*/gt from create_davis_blur.py).")
     args = ap.parse_args()
 
+    # Resolve user paths against the caller's cwd before switching to the repo dir.
+    for k in ("input", "gt", "output", "weights_dir", "maps"):
+        if getattr(args, k):
+            setattr(args, k, os.path.abspath(getattr(args, k)))
+    args.models = [m if m in MODEL_PRESETS else os.path.abspath(m) for m in args.models]
     os.chdir(HERE)  # model code loads relative paths
     import lpips as lpips_lib
     from model.dabit import DaBiT
