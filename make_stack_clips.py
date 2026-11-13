@@ -7,6 +7,7 @@ shortens it by taking one frame per position (--frame, default 5, i.e. the
 middle of the 10 settled frames). Frames are symlinked as 00000.png, ...
 
     python make_stack_clips.py --stacks ~/repos/dabit/bath_test --out results_clip/bath_test/clips
+    python make_stack_clips.py --stacks ~/repos/dabit/bath_test/scene5_kitchen --names scene5_lit_forward ... --out ...
 """
 import os
 import json
@@ -18,9 +19,11 @@ def main():
     ap.add_argument("--stacks", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--frame", type=int, default=5)
+    ap.add_argument("--names", nargs="+", default=None,
+                    help="Only these stack folders (a plain walk would hit non-stack meta.json files, e.g. *_stills)")
     a = ap.parse_args()
     root = os.path.expanduser(a.stacks)
-    for name in sorted(os.listdir(root)):
+    for name in (a.names or sorted(os.listdir(root))):
         meta_p = os.path.join(root, name, "meta.json")
         if not os.path.isfile(meta_p):
             continue

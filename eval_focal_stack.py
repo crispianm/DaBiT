@@ -17,8 +17,13 @@ the reference is warped into the geometry of the scored slice. A control
 reports raw-frame vs reference PSNR for patches within 1 slice of focus, with
 and without the registration.
 
-Scored pairs: valid patches (prominence > 3, gt_spread < 1.5) at lens positions
+Scored pairs: valid patches at lens positions
 >= --min_dist slices (1 slice = 1365 lens units) from the patch's gt_pos.
+Valid (--filter thesis, default; same as Ch 6): median over the 4 GT measures
+(z["gt_measures"]) of max/median of clean_<m> > 3, gt_spread < 1.5 and
+gt_pos < 63487. --filter key: the older prominence > 3, gt_spread < 1.5.
+References are means over the ref stack's frames_per_slice (meta.json), so the
+30-frame scene-5 lit forward stack gives 30-frame references.
 
 Low light (--ref_stack): references, registration and GT come from a registered
 lit stack (scene 4 -> scene 3). Each evaluated patch is gain-matched per channel
@@ -42,6 +47,15 @@ METRICS = ("PSNR", "SSIM", "LPIPS")
 def _ssim_psnr(chunk):
     from core.metrics import calc_psnr_and_ssim
     return [calc_psnr_and_ssim(a, b) for a, b in chunk]
+
+
+def patch_filter(z, kind="thesis"):
+    """Indices of valid patches in a gt npz."""
+    if kind == "key":
+        return np.where((z["prominence"] > 3) & (z["gt_spread"] < 1.5))[0]
+    ratios = [z[f"clean_{m}"].max(0) / np.median(z[f"clean_{m}"], 0) for m in z["gt_measures"]]
+    prom = np.median(np.stack(ratios), 0)
+    return np.where((prom > 3) & (z["gt_spread"] < 1.5) & (z["gt_pos"] < 63487))[0]
 
 
 def ecc_chain(small):
@@ -82,6 +96,7 @@ def main():
     ap.add_argument("--ref_stack", default=None, help="Registered lit stack for low-light references")
     ap.add_argument("--min_dist", type=float, default=3.0)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--filter", choices=["thesis", "key"], default="thesis")
     ap.add_argument("--workers", type=int, default=12)
     a = ap.parse_args()
 
@@ -101,14 +116,15 @@ def main():
     z = np.load(a.gt)
     positions = z["positions"].astype(np.int64)
     gt_pos, boxes = z["gt_pos"], z["boxes"]
-    valid = np.where((z["prominence"] > 3) & (z["gt_spread"] < 1.5))[0]
+    valid = patch_filter(z, a.filter)
     assert set(positions.tolist()) == set(rpos) == set(epos)
 
     def slice_mean(ri, root=None, p=None):
         root = root or ref_root
         p = rpos[ri] if p is None else p
-        acc = sum(cv2.imread(os.path.join(root, f"s{p:05d}_f{f:02d}.png")).astype(np.float32) for f in range(F))
-        return acc / F  # BGR
+        n = F if root == ref_root else emeta["frames_per_slice"]  # each stack's own frame count
+        acc = sum(cv2.imread(os.path.join(root, f"s{p:05d}_f{f:02d}.png")).astype(np.float32) for f in range(n))
+        return acc / n  # BGR
 
     def lighting_robust_edges(img):
         g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -221,7 +237,7 @@ def main():
             wr.writerow([r["position"], r["clip_frame"], r["patch"], f"{r['dist']:.3f}"] +
                         [f"{vals[m][k][j]:.5f}" for m in methods for k in METRICS])
     dist = np.array([r["dist"] for r in rows])
-    summ = {"n_pairs": len(rows), "n_valid_patches": int(len(valid)), "ecc_failures": fails,
+    summ = {"n_pairs": len(rows), "n_valid_patches": int(len(valid)), "filter": a.filter, "ecc_failures": fails,
             "lowlight_gain_matched": lowlight, "min_dist_slices": a.min_dist,
             "cross_stack_shift_px": ({"dx_median": float(np.median([s[1] for s in shifts])),
                                       "dx_range": [float(min(s[1] for s in shifts)), float(max(s[1] for s in shifts))],
